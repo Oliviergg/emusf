@@ -290,12 +290,20 @@ class ApexInterpreter:
             elif expr.op == "!=":
                 return left != right
             elif expr.op == "<":
+                if left is None or right is None:
+                    return False
                 return left < right
             elif expr.op == ">":
+                if left is None or right is None:
+                    return False
                 return left > right
             elif expr.op == "<=":
+                if left is None or right is None:
+                    return False
                 return left <= right
             elif expr.op == ">=":
+                if left is None or right is None:
+                    return False
                 return left >= right
             elif expr.op == "&&":
                 return self._is_truthy(left) and self._is_truthy(right)
@@ -340,6 +348,10 @@ class ApexInterpreter:
         obj = self.variables.get(call.obj)
         args = [self._eval(a) for a in call.args]
         method = call.method
+
+        # Null-safe: appeler une méthode sur null retourne null
+        if obj is None and call.obj not in self.classes and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime"):
+            return None
 
         # List methods
         if isinstance(obj, list):
@@ -401,33 +413,9 @@ class ApexInterpreter:
             elif method == "remove":
                 return obj.pop(args[0], None) if args else None
 
-        # String methods
+        # String methods — delegate to _call_string_method
         elif isinstance(obj, str):
-            if method == "length":
-                return len(obj)
-            elif method == "contains":
-                return args[0] in obj if args else False
-            elif method == "startsWith":
-                return obj.startswith(args[0]) if args else False
-            elif method == "endsWith":
-                return obj.endswith(args[0]) if args else False
-            elif method == "toLowerCase":
-                return obj.lower()
-            elif method == "toUpperCase":
-                return obj.upper()
-            elif method == "trim":
-                return obj.strip()
-            elif method == "substring":
-                if len(args) >= 2:
-                    return obj[int(args[0]):int(args[1])]
-                return obj[int(args[0]):] if args else obj
-            elif method == "indexOf":
-                return obj.find(args[0]) if args else -1
-            elif method == "replace":
-                if len(args) >= 2:
-                    return obj.replace(args[0], args[1])
-            elif method == "split":
-                return obj.split(args[0]) if args else [obj]
+            return self._call_string_method(obj, method, args)
 
         # SObject field access via method (e.getMessage() etc.)
         elif isinstance(obj, dict):
@@ -468,6 +456,24 @@ class ApexInterpreter:
                     return int(args[0]) if args else 0
                 except (ValueError, TypeError):
                     return 0
+
+        # Date static methods
+        if call.obj == "Date":
+            if method == "newInstance":
+                if len(args) >= 3:
+                    return {"_type": "Date", "year": int(args[0]), "month": int(args[1]), "day": int(args[2])}
+                return None
+            if method == "today":
+                import datetime
+                d = datetime.date.today()
+                return {"_type": "Date", "year": d.year, "month": d.month, "day": d.day}
+
+        # DateTime static methods
+        if call.obj == "DateTime":
+            if method == "newInstance":
+                if len(args) >= 3:
+                    return {"_type": "DateTime", "year": int(args[0]), "month": int(args[1]), "day": int(args[2])}
+                return None
 
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))
 

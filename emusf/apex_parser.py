@@ -158,8 +158,8 @@ class ApexParser:
                     pass
 
     def _extract_method(self, source: str, method_name: str) -> Optional[str]:
-        # Supporte les méthodes avec ou sans paramètres
-        pattern = r'(?:public|private)\s+static\s+\w+\s+{}\s*\([^)]*\)\s*\{{'.format(
+        # Supporte les méthodes avec ou sans paramètres, avec ou sans access modifier
+        pattern = r'(?:(?:public|private|protected|global)\s+)?(?:static\s+)?(?:(?:testMethod|void|\w+)\s+)?{}\s*\([^)]*\)\s*\{{'.format(
             re.escape(method_name)
         )
         match = re.search(pattern, source)
@@ -588,12 +588,19 @@ class ApexParser:
         return [self._parse_expr(a) for a in raw if a.strip()]
 
     def _split_args_str(self, s: str) -> list:
-        """Split par virgule en respectant parenthèses et strings."""
+        """Split par virgule en respectant parenthèses et strings (avec escaped quotes)."""
         parts = []
         current = ""
         depth = 0
         in_string = False
-        for ch in s:
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if in_string and ch == "\\" and i + 1 < len(s) and s[i + 1] == "'":
+                # Escaped quote — skip
+                current += ch + s[i + 1]
+                i += 2
+                continue
             if ch == "'" and not in_string:
                 in_string = True
                 current += ch
@@ -611,6 +618,7 @@ class ApexParser:
                 current = ""
             else:
                 current += ch
+            i += 1
         if current.strip():
             parts.append(current.strip())
         return parts
@@ -683,9 +691,10 @@ class ApexParser:
         if expr.startswith("!"):
             return UnaryOp(op="!", operand=self._parse_expr(expr[1:]))
 
-        # String literal
+        # String literal (supports escaped quotes: 'Avis d\'annulation')
         if expr.startswith("'") and expr.endswith("'"):
-            return StringLiteral(value=expr[1:-1])
+            inner = expr[1:-1].replace("\\'", "'")
+            return StringLiteral(value=inner)
 
         # Boolean
         if expr == "true":
@@ -749,6 +758,10 @@ class ApexParser:
         i = 0
         while i < len(expr):
             ch = expr[i]
+            if in_string and ch == "\\" and i + 1 < len(expr) and expr[i + 1] == "'":
+                current += ch + expr[i + 1]
+                i += 2
+                continue
             if ch == "'" and depth == 0:
                 in_string = not in_string
                 current += ch
@@ -776,23 +789,29 @@ class ApexParser:
         return parts
 
     def _split_concat(self, expr: str) -> list:
-        """Split une expression par + en respectant les strings."""
+        """Split une expression par + en respectant les strings (avec escaped quotes)."""
         parts = []
         current = ""
         in_string = False
-
-        for char in expr:
-            if char == "'" and not in_string:
+        i = 0
+        while i < len(expr):
+            ch = expr[i]
+            if in_string and ch == "\\" and i + 1 < len(expr) and expr[i + 1] == "'":
+                current += ch + expr[i + 1]
+                i += 2
+                continue
+            if ch == "'" and not in_string:
                 in_string = True
-                current += char
-            elif char == "'" and in_string:
+                current += ch
+            elif ch == "'" and in_string:
                 in_string = False
-                current += char
-            elif char == "+" and not in_string:
+                current += ch
+            elif ch == "+" and not in_string:
                 parts.append(current.strip())
                 current = ""
             else:
-                current += char
+                current += ch
+            i += 1
 
         if current.strip():
             parts.append(current.strip())
