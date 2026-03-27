@@ -8,9 +8,10 @@ from typing import Optional
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
+    MethodCall, NewList, NewMap,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
-    SystemDebug, ForEach, IfElse, Block,
+    SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
 )
 
 
@@ -122,6 +123,18 @@ class ApexParser:
         if if_match:
             return self._parse_if(stmt)
 
+        # --- try { ... } catch (Type var) { ... } ---
+        try_match = re.match(r'try\s*\{', stmt)
+        if try_match:
+            return self._parse_try_catch(stmt)
+
+        # --- return expr; ---
+        return_match = re.match(r'return\b\s*(.*?)\s*;?$', stmt)
+        if return_match:
+            expr_str = return_match.group(1).strip()
+            value = self._parse_expr(expr_str) if expr_str else None
+            return Return(value=value)
+
         # --- System.debug(...) ---
         debug_match = re.match(r"System\.debug\((.+)\)", stmt.rstrip(";"))
         if debug_match:
@@ -142,6 +155,16 @@ class ApexParser:
         delete_match = re.match(r'delete\s+(\w+)\s*;?$', stmt)
         if delete_match:
             return DmlDelete(var_name=delete_match.group(1))
+
+        # --- obj.method(args); (statement, pas assignment) ---
+        method_stmt_match = re.match(r'(\w+)\.(\w+)\((.*)?\)\s*;?$', stmt, re.DOTALL)
+        if method_stmt_match:
+            # Vérifier que ce n'est pas un field set (pas de = après)
+            obj = method_stmt_match.group(1)
+            method = method_stmt_match.group(2)
+            args_str = method_stmt_match.group(3) or ""
+            args = self._parse_call_args(args_str) if args_str.strip() else []
+            return MethodCallStmt(call=MethodCall(obj=obj, method=method, args=args))
 
         # --- var.Field = expr; ---
         field_set_match = re.match(r'(\w+)\.(\w+)\s*=\s*(.+?)\s*;?$', stmt)
@@ -164,6 +187,39 @@ class ApexParser:
                 soql="[{}]".format(soql_match.group(3)),
             )
 
+        # --- List<T> var = new List<T>(); or List<T> var = new List<T>{...}; ---
+        new_list_match = re.match(
+            r'(?:List<(\w+)>\s+)?(\w+)\s*=\s*new\s+List<(\w+)>\s*(?:\(\s*\)|\{(.*?)\})\s*;?$',
+            stmt, re.DOTALL
+        )
+        if new_list_match:
+            elem_type = new_list_match.group(1) or new_list_match.group(3)
+            var_name = new_list_match.group(2)
+            init_str = new_list_match.group(4)
+            init_values = []
+            if init_str and init_str.strip():
+                init_values = [self._parse_expr(a) for a in self._parse_call_args(init_str)]
+            return VarDecl(
+                type_name="List<{}>".format(elem_type),
+                var_name=var_name,
+                value=NewList(element_type=elem_type, init_values=init_values),
+            )
+
+        # --- Map<K,V> var = new Map<K,V>(); ---
+        new_map_match = re.match(
+            r'(?:Map<(\w+)\s*,\s*(\w+)>\s+)?(\w+)\s*=\s*new\s+Map<(\w+)\s*,\s*(\w+)>\s*\(\s*\)\s*;?$',
+            stmt
+        )
+        if new_map_match:
+            k_type = new_map_match.group(1) or new_map_match.group(4)
+            v_type = new_map_match.group(2) or new_map_match.group(5)
+            var_name = new_map_match.group(3)
+            return VarDecl(
+                type_name="Map<{},{}>".format(k_type, v_type),
+                var_name=var_name,
+                value=NewMap(key_type=k_type, value_type=v_type),
+            )
+
         # --- Type var = new SObject(...); ---
         new_obj_match = re.match(
             r'(\w+)\s+(\w+)\s*=\s*new\s+(\w+)\((.+?)\)\s*;?$',
@@ -177,6 +233,21 @@ class ApexParser:
                 value=NewSObject(
                     sobject_type=new_obj_match.group(3),
                     fields=fields,
+                ),
+            )
+
+        # --- Type var = new SObject(); (empty constructor) ---
+        new_empty_match = re.match(
+            r'(\w+)\s+(\w+)\s*=\s*new\s+(\w+)\(\s*\)\s*;?$',
+            stmt
+        )
+        if new_empty_match:
+            return VarDecl(
+                type_name=new_empty_match.group(1),
+                var_name=new_empty_match.group(2),
+                value=NewSObject(
+                    sobject_type=new_empty_match.group(3),
+                    fields={},
                 ),
             )
 
@@ -250,6 +321,80 @@ class ApexParser:
                 else_body = self._parse_block(rest[block_start:k - 1])
 
         return IfElse(condition=condition, then_body=then_body, else_body=else_body)
+
+    def _parse_try_catch(self, stmt: str) -> TryCatch:
+        """Parse try { ... } catch (Type var) { ... }"""
+        # Trouver le bloc try { ... }
+        try_start = stmt.index("{") + 1
+        depth = 1
+        i = try_start
+        while i < len(stmt) and depth > 0:
+            if stmt[i] == "{":
+                depth += 1
+            elif stmt[i] == "}":
+                depth -= 1
+            i += 1
+        try_body = self._parse_block(stmt[try_start:i - 1])
+
+        # Chercher catch
+        rest = stmt[i:].strip()
+        catch_match = re.match(r'catch\s*\(\s*(\w+)\s+(\w+)\s*\)\s*\{', rest)
+        catch_type = "Exception"
+        catch_var = "e"
+        catch_body = []
+        if catch_match:
+            catch_type = catch_match.group(1)
+            catch_var = catch_match.group(2)
+            block_start = catch_match.end()
+            depth = 1
+            j = block_start
+            while j < len(rest) and depth > 0:
+                if rest[j] == "{":
+                    depth += 1
+                elif rest[j] == "}":
+                    depth -= 1
+                j += 1
+            catch_body = self._parse_block(rest[block_start:j - 1])
+
+        return TryCatch(
+            try_body=try_body,
+            catch_type=catch_type,
+            catch_var=catch_var,
+            catch_body=catch_body,
+        )
+
+    def _parse_call_args(self, args_str: str) -> list:
+        """Parse les arguments d'un appel de méthode en list[Expr]."""
+        raw = self._split_args_str(args_str)
+        return [self._parse_expr(a) for a in raw if a.strip()]
+
+    def _split_args_str(self, s: str) -> list:
+        """Split par virgule en respectant parenthèses et strings."""
+        parts = []
+        current = ""
+        depth = 0
+        in_string = False
+        for ch in s:
+            if ch == "'" and not in_string:
+                in_string = True
+                current += ch
+            elif ch == "'" and in_string:
+                in_string = False
+                current += ch
+            elif not in_string and ch == "(":
+                depth += 1
+                current += ch
+            elif not in_string and ch == ")":
+                depth -= 1
+                current += ch
+            elif ch == "," and depth == 0 and not in_string:
+                parts.append(current.strip())
+                current = ""
+            else:
+                current += ch
+        if current.strip():
+            parts.append(current.strip())
+        return parts
 
     # --- Expression parser ---
 
@@ -326,6 +471,15 @@ class ApexParser:
         # Integer
         if expr.isdigit():
             return IntegerLiteral(value=int(expr))
+
+        # Method call: obj.method(args) as expression
+        method_expr_match = re.match(r'(\w+)\.(\w+)\((.*)?\)$', expr, re.DOTALL)
+        if method_expr_match:
+            obj = method_expr_match.group(1)
+            method = method_expr_match.group(2)
+            args_str = method_expr_match.group(3) or ""
+            args = self._parse_call_args(args_str) if args_str.strip() else []
+            return MethodCall(obj=obj, method=method, args=args)
 
         # Field access: var.Field
         if "." in expr:

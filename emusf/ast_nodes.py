@@ -64,6 +64,28 @@ class NewSObject(Expr):
     fields: dict  # {field_name: Expr}
 
 
+@dataclass
+class MethodCall(Expr):
+    """obj.method(args) ou Class.method(args)"""
+    obj: str
+    method: str
+    args: list  # list[Expr]
+
+
+@dataclass
+class NewList(Expr):
+    """new List<Type>() ou new List<Type>{expr, ...}"""
+    element_type: str
+    init_values: list  # list[Expr]
+
+
+@dataclass
+class NewMap(Expr):
+    """new Map<K,V>()"""
+    key_type: str
+    value_type: str
+
+
 # --- Statements ---
 
 @dataclass
@@ -132,6 +154,25 @@ class IfElse(Stmt):
     condition: Expr
     then_body: list  # list[Stmt]
     else_body: list  # list[Stmt] (peut être vide)
+
+
+@dataclass
+class Return(Stmt):
+    value: Optional[Expr]  # None pour return;
+
+
+@dataclass
+class MethodCallStmt(Stmt):
+    """Statement wrapper pour un appel de méthode (sans assignation)."""
+    call: MethodCall
+
+
+@dataclass
+class TryCatch(Stmt):
+    try_body: list  # list[Stmt]
+    catch_type: str  # ex: 'Exception'
+    catch_var: str  # ex: 'e'
+    catch_body: list  # list[Stmt]
 
 
 @dataclass

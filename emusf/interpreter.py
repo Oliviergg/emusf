@@ -7,10 +7,18 @@ from .apex_parser import ApexParser
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
+    MethodCall, NewList, NewMap,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
-    SystemDebug, ForEach, IfElse, Block,
+    SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
 )
+
+
+class ReturnException(Exception):
+    """Signal interne pour return."""
+
+    def __init__(self, value=None):
+        self.value = value
 
 
 class ApexInterpreter:
@@ -19,7 +27,7 @@ class ApexInterpreter:
     Le parsing est délégué à ApexParser.
     """
 
-    def __init__(self, org: FakeOrg):
+    def __init__(self, org):
         self.org = org
         self.parser = ApexParser()
         self.variables = {}
@@ -35,8 +43,11 @@ class ApexInterpreter:
     # --- Statement execution ---
 
     def _exec_block(self, block: Block):
-        for stmt in block.statements:
-            self._exec_stmt(stmt)
+        try:
+            for stmt in block.statements:
+                self._exec_stmt(stmt)
+        except ReturnException:
+            pass  # return au top level = fin d'exécution
 
     def _exec_stmt(self, stmt: Stmt):
         if isinstance(stmt, VarDecl):
@@ -86,6 +97,27 @@ class ApexInterpreter:
                 self.variables[stmt.iter_var] = item
                 for body_stmt in stmt.body:
                     self._exec_stmt(body_stmt)
+
+        elif isinstance(stmt, Return):
+            value = self._eval(stmt.value) if stmt.value else None
+            raise ReturnException(value)
+
+        elif isinstance(stmt, MethodCallStmt):
+            self._eval(stmt.call)
+
+        elif isinstance(stmt, TryCatch):
+            try:
+                for s in stmt.try_body:
+                    self._exec_stmt(s)
+            except ReturnException:
+                raise  # Return passe à travers
+            except Exception as e:
+                self.variables[stmt.catch_var] = {
+                    "getMessage": str(e),
+                    "_type": stmt.catch_type,
+                }
+                for s in stmt.catch_body:
+                    self._exec_stmt(s)
 
         else:
             raise Exception("Statement inconnu: {}".format(type(stmt).__name__))
@@ -162,10 +194,15 @@ class ApexInterpreter:
             left = self._eval(expr.left)
             right = self._eval(expr.right)
             if expr.op == "+":
-                # Si les deux sont des nombres, additionner
                 if isinstance(left, (int, float)) and isinstance(right, (int, float)):
                     return left + right
                 return str(left) + str(right)
+            elif expr.op == "-":
+                return left - right
+            elif expr.op == "*":
+                return left * right
+            elif expr.op == "/":
+                return left / right
             elif expr.op == "==":
                 return left == right
             elif expr.op == "!=":
@@ -190,8 +227,100 @@ class ApexInterpreter:
                 record[field] = self._eval(val_expr)
             return record
 
+        elif isinstance(expr, NewList):
+            return [self._eval(v) for v in expr.init_values]
+
+        elif isinstance(expr, NewMap):
+            return {}
+
+        elif isinstance(expr, MethodCall):
+            return self._exec_method_call(expr)
+
         else:
             raise Exception("Expression inconnue: {}".format(type(expr).__name__))
+
+    def _exec_method_call(self, call: MethodCall):
+        """Exécute un appel de méthode sur un objet ou une collection."""
+        obj = self.variables.get(call.obj)
+        args = [self._eval(a) for a in call.args]
+        method = call.method
+
+        # List methods
+        if isinstance(obj, list):
+            if method == "add":
+                obj.append(args[0] if args else None)
+                return None
+            elif method == "size":
+                return len(obj)
+            elif method == "isEmpty":
+                return len(obj) == 0
+            elif method == "get":
+                return obj[int(args[0])] if args else None
+            elif method == "contains":
+                return args[0] in obj if args else False
+            elif method == "remove":
+                idx = int(args[0])
+                return obj.pop(idx)
+            elif method == "clear":
+                obj.clear()
+                return None
+
+        # Map methods
+        elif isinstance(obj, dict) and "_sobject_type" not in obj:
+            if method == "put":
+                if len(args) >= 2:
+                    obj[args[0]] = args[1]
+                return None
+            elif method == "get":
+                return obj.get(args[0]) if args else None
+            elif method == "containsKey":
+                return args[0] in obj if args else False
+            elif method == "keySet":
+                return list(obj.keys())
+            elif method == "values":
+                return list(obj.values())
+            elif method == "size":
+                return len(obj)
+            elif method == "isEmpty":
+                return len(obj) == 0
+            elif method == "remove":
+                return obj.pop(args[0], None) if args else None
+
+        # String methods
+        elif isinstance(obj, str):
+            if method == "length":
+                return len(obj)
+            elif method == "contains":
+                return args[0] in obj if args else False
+            elif method == "startsWith":
+                return obj.startswith(args[0]) if args else False
+            elif method == "endsWith":
+                return obj.endswith(args[0]) if args else False
+            elif method == "toLowerCase":
+                return obj.lower()
+            elif method == "toUpperCase":
+                return obj.upper()
+            elif method == "trim":
+                return obj.strip()
+            elif method == "substring":
+                if len(args) >= 2:
+                    return obj[int(args[0]):int(args[1])]
+                return obj[int(args[0]):] if args else obj
+            elif method == "indexOf":
+                return obj.find(args[0]) if args else -1
+            elif method == "replace":
+                if len(args) >= 2:
+                    return obj.replace(args[0], args[1])
+            elif method == "split":
+                return obj.split(args[0]) if args else [obj]
+
+        # SObject field access via method (e.getMessage() etc.)
+        elif isinstance(obj, dict):
+            val = obj.get(method)
+            if val is not None:
+                return val
+
+        raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))
 
     def _is_truthy(self, val) -> bool:
         """Évalue la vérité d'une valeur Apex."""

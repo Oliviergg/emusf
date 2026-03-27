@@ -5,9 +5,10 @@ from __future__ import annotations
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
+    MethodCall, NewList, NewMap,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
-    SystemDebug, ForEach, IfElse, Block,
+    SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
 )
 
 # Couleurs ANSI
@@ -90,6 +91,27 @@ def _print_stmt(stmt, prefix, is_last):
             # Fermer proprement l'arbre
             pass
 
+    elif isinstance(stmt, Return):
+        print(prefix + c + MAGENTA + "return" + RESET)
+        if stmt.value:
+            _print_expr(stmt.value, cp, True)
+
+    elif isinstance(stmt, MethodCallStmt):
+        call = stmt.call
+        args_str = ", ".join(_expr_inline(a) for a in call.args)
+        print(prefix + c + YELLOW + call.obj + "." + call.method + RESET + "(" + args_str + ")")
+
+    elif isinstance(stmt, TryCatch):
+        print(prefix + c + MAGENTA + "try" + RESET)
+        try_cp = cp + "│   "
+        print(cp + "├── " + DIM + "try:" + RESET)
+        for j, s in enumerate(stmt.try_body):
+            _print_stmt(s, try_cp, j == len(stmt.try_body) - 1)
+        print(cp + "└── " + DIM + "catch" + RESET + " (" + stmt.catch_type + " " + stmt.catch_var + ")")
+        catch_cp = cp + "    "
+        for j, s in enumerate(stmt.catch_body):
+            _print_stmt(s, catch_cp, j == len(stmt.catch_body) - 1)
+
     elif isinstance(stmt, ForEach):
         list_str = _expr_inline(stmt.list_expr)
         print(prefix + c + MAGENTA + "for" + RESET
@@ -142,6 +164,17 @@ def _print_expr(expr, prefix, is_last):
             print(cp + fc + field + " =")
             _print_expr(val, fcp, True)
 
+    elif isinstance(expr, MethodCall):
+        args_str = ", ".join(_expr_inline(a) for a in expr.args)
+        print(prefix + c + expr.obj + "." + BOLD + expr.method + RESET + "(" + args_str + ")")
+
+    elif isinstance(expr, NewList):
+        inits = ", ".join(_expr_inline(v) for v in expr.init_values) if expr.init_values else ""
+        print(prefix + c + CYAN + "new List<" + expr.element_type + ">" + RESET + "{" + inits + "}")
+
+    elif isinstance(expr, NewMap):
+        print(prefix + c + CYAN + "new Map<" + expr.key_type + "," + expr.value_type + ">" + RESET + "()")
+
     else:
         print(prefix + c + str(expr))
 
@@ -154,6 +187,13 @@ def _expr_inline(expr):
         return expr.obj + "." + expr.field
     elif isinstance(expr, StringLiteral):
         return "'" + expr.value + "'"
+    elif isinstance(expr, IntegerLiteral):
+        return str(expr.value)
+    elif isinstance(expr, BooleanLiteral):
+        return str(expr.value)
+    elif isinstance(expr, MethodCall):
+        args = ", ".join(_expr_inline(a) for a in expr.args)
+        return expr.obj + "." + expr.method + "(" + args + ")"
     return str(expr)
 
 
