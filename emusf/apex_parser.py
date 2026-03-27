@@ -8,10 +8,11 @@ from typing import Optional
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
-    MethodCall, NewList, NewMap,
+    MethodCall, ChainedCall, Ternary, NewList, NewMap,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
+    WhileLoop, ThrowStmt,
     MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
@@ -212,9 +213,9 @@ class ApexParser:
             elif char == "}":
                 depth -= 1
                 if depth == 0:
-                    # Vérifier si un 'else' suit (pour if/else)
+                    # Vérifier si un 'else' ou 'catch' suit
                     rest = block[i + 1:].lstrip()
-                    if rest.startswith("else"):
+                    if rest.startswith("else") or rest.startswith("catch"):
                         # Ne pas couper ici — continuer pour inclure le else
                         pass
                     else:
@@ -253,6 +254,18 @@ class ApexParser:
         if_match = re.match(r'if\s*\((.+?)\)\s*\{', stmt)
         if if_match:
             return self._parse_if(stmt)
+
+        # --- while (cond) { body } ---
+        while_match = re.match(r'while\s*\((.+?)\)\s*\{(.*)\}', stmt, re.DOTALL)
+        if while_match:
+            cond = self._parse_expr(while_match.group(1))
+            body = self._parse_block(while_match.group(2))
+            return WhileLoop(condition=cond, body=body)
+
+        # --- throw new Exception('msg'); ---
+        throw_match = re.match(r'throw\s+(.+?)\s*;?$', stmt)
+        if throw_match:
+            return ThrowStmt(expr=self._parse_expr(throw_match.group(1)))
 
         # --- switch on expr { when ... } ---
         switch_match = re.match(r'switch\s+on\s+(.+?)\s*\{', stmt)
@@ -612,6 +625,16 @@ class ApexParser:
         if expr.startswith("(") and self._matching_paren(expr, 0) == len(expr) - 1:
             return self._parse_expr(expr[1:-1])
 
+        # Ternaire : cond ? then : else (priorité la plus basse)
+        ternary_parts = self._split_ternary(expr)
+        if ternary_parts:
+            cond, then_expr, else_expr = ternary_parts
+            return Ternary(
+                condition=self._parse_expr(cond),
+                then_expr=self._parse_expr(then_expr),
+                else_expr=self._parse_expr(else_expr),
+            )
+
         # || (priorité la plus basse)
         parts = self._split_op(expr, "||")
         if len(parts) > 1:
@@ -674,18 +697,28 @@ class ApexParser:
         if expr == "null":
             return NullLiteral()
 
-        # Integer
+        # Integer / Decimal
         if expr.isdigit():
             return IntegerLiteral(value=int(expr))
+        if re.match(r'^\d+\.\d+$', expr):
+            return IntegerLiteral(value=float(expr))
 
-        # Method call: obj.method(args) as expression
-        method_expr_match = re.match(r'(\w+)\.(\w+)\((.*)?\)$', expr, re.DOTALL)
-        if method_expr_match:
-            obj = method_expr_match.group(1)
-            method = method_expr_match.group(2)
-            args_str = method_expr_match.group(3) or ""
+        # new ClassName('args') as expression (exceptions, inner classes)
+        new_expr_match = re.match(r'new\s+(\w+)\((.*)?\)$', expr, re.DOTALL)
+        if new_expr_match:
+            cls_name = new_expr_match.group(1)
+            args_str = new_expr_match.group(2) or ""
             args = self._parse_call_args(args_str) if args_str.strip() else []
-            return MethodCall(obj=obj, method=method, args=args)
+            # Pour les exceptions, on retourne un NewSObject avec un champ message
+            if args:
+                fields = {"message": args[0]}
+                return NewSObject(sobject_type=cls_name, fields=fields)
+            return NewSObject(sobject_type=cls_name, fields={})
+
+        # Method call: obj.method(args) — peut être chaîné
+        method_expr_match = re.match(r'(\w+)\.(\w+)\(', expr, re.DOTALL)
+        if method_expr_match:
+            return self._parse_method_chain(expr)
 
         # Field access: var.Field
         if "." in expr:
@@ -792,3 +825,86 @@ class ApexParser:
                 result[field] = value
 
         return result
+
+    def _parse_method_chain(self, expr: str) -> Expr:
+        """Parse une chaîne d'appels de méthodes : a.b(c).d(e).f"""
+        pos = 0
+        # Premier segment : obj.method(args)
+        first_match = re.match(r'(\w+)\.(\w+)\(', expr)
+        if not first_match:
+            return Variable(name=expr)
+
+        obj_name = first_match.group(1)
+        method_name = first_match.group(2)
+        paren_start = first_match.end() - 1
+        paren_end = self._matching_paren(expr, paren_start)
+
+        args_str = expr[paren_start + 1:paren_end]
+        args = self._parse_call_args(args_str) if args_str.strip() else []
+        result = MethodCall(obj=obj_name, method=method_name, args=args)
+
+        pos = paren_end + 1
+
+        # Chaîner les appels suivants : .method(args)
+        while pos < len(expr):
+            chain_match = re.match(r'\.(\w+)\(', expr[pos:])
+            if not chain_match:
+                # Peut être un field access final : .field
+                field_match = re.match(r'\.(\w+)$', expr[pos:])
+                if field_match:
+                    # Wrap dans un ChainedCall sans args (field access sur résultat)
+                    result = ChainedCall(target=result, method=field_match.group(1), args=[])
+                break
+
+            next_method = chain_match.group(1)
+            next_paren_start = pos + chain_match.end() - 1
+            next_paren_end = self._matching_paren(expr, next_paren_start)
+            next_args_str = expr[next_paren_start + 1:next_paren_end]
+            next_args = self._parse_call_args(next_args_str) if next_args_str.strip() else []
+            result = ChainedCall(target=result, method=next_method, args=next_args)
+            pos = next_paren_end + 1
+
+        return result
+
+    def _split_ternary(self, expr: str):
+        """Split une expression ternaire cond ? then : else. Retourne (cond, then, else) ou None."""
+        depth = 0
+        in_string = False
+        q_pos = -1
+        for i, ch in enumerate(expr):
+            if ch == "'" and not in_string:
+                in_string = True
+            elif ch == "'" and in_string:
+                in_string = False
+            elif not in_string:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                elif ch == "?" and depth == 0:
+                    q_pos = i
+                    break
+
+        if q_pos == -1:
+            return None
+
+        cond = expr[:q_pos].strip()
+        rest = expr[q_pos + 1:]
+
+        # Trouver le : correspondant
+        depth = 0
+        in_string = False
+        for i, ch in enumerate(rest):
+            if ch == "'" and not in_string:
+                in_string = True
+            elif ch == "'" and in_string:
+                in_string = False
+            elif not in_string:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                elif ch == ":" and depth == 0:
+                    return (cond, rest[:i].strip(), rest[i + 1:].strip())
+
+        return None

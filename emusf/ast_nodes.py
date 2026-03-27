@@ -67,9 +67,25 @@ class NewSObject(Expr):
 @dataclass
 class MethodCall(Expr):
     """obj.method(args) ou Class.method(args)"""
-    obj: str
+    obj: str  # peut être un str ou une Expr pour le chaînage
     method: str
     args: list  # list[Expr]
+
+
+@dataclass
+class ChainedCall(Expr):
+    """expr.method(args) — appel chaîné sur une expression"""
+    target: Expr
+    method: str
+    args: list  # list[Expr]
+
+
+@dataclass
+class Ternary(Expr):
+    """condition ? then_expr : else_expr"""
+    condition: Expr
+    then_expr: Expr
+    else_expr: Expr
 
 
 @dataclass
@@ -187,6 +203,17 @@ class SwitchWhen(Stmt):
     """switch on expr { when 'val' { ... } when else { ... } }"""
     expr: Expr
     cases: list  # list[(list[Expr]|None, list[Stmt])]  None = else
+
+
+@dataclass
+class WhileLoop(Stmt):
+    condition: Expr
+    body: list  # list[Stmt]
+
+
+@dataclass
+class ThrowStmt(Stmt):
+    expr: Expr
 
 
 @dataclass

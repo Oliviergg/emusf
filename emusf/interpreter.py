@@ -7,10 +7,11 @@ from .apex_parser import ApexParser
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
-    MethodCall, NewList, NewMap,
+    MethodCall, ChainedCall, Ternary, NewList, NewMap,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
+    WhileLoop, ThrowStmt,
     MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
@@ -20,6 +21,11 @@ class ReturnException(Exception):
 
     def __init__(self, value=None):
         self.value = value
+
+
+class ApexException(Exception):
+    """Exception Apex (throw new ...)."""
+    pass
 
 
 class ApexInterpreter:
@@ -156,15 +162,34 @@ class ApexInterpreter:
                             self._exec_stmt(s)
                         break
 
+        elif isinstance(stmt, WhileLoop):
+            max_iter = 10000
+            count = 0
+            while self._is_truthy(self._eval(stmt.condition)):
+                for s in stmt.body:
+                    self._exec_stmt(s)
+                count += 1
+                if count > max_iter:
+                    raise Exception("Boucle infinie détectée (>{} itérations)".format(max_iter))
+
+        elif isinstance(stmt, ThrowStmt):
+            val = self._eval(stmt.expr)
+            if isinstance(val, dict):
+                msg = val.get("message", val.get("getMessage", str(val)))
+            else:
+                msg = str(val) if val else "Exception"
+            raise ApexException(msg)
+
         elif isinstance(stmt, TryCatch):
             try:
                 for s in stmt.try_body:
                     self._exec_stmt(s)
             except ReturnException:
-                raise  # Return passe à travers
-            except Exception as e:
+                raise
+            except (ApexException, Exception) as e:
                 self.variables[stmt.catch_var] = {
                     "getMessage": str(e),
+                    "message": str(e),
                     "_type": stmt.catch_type,
                 }
                 for s in stmt.catch_body:
@@ -292,6 +317,17 @@ class ApexInterpreter:
 
         elif isinstance(expr, NewSet):
             return set(self._eval(v) for v in expr.init_values)
+
+        elif isinstance(expr, Ternary):
+            cond = self._eval(expr.condition)
+            if self._is_truthy(cond):
+                return self._eval(expr.then_expr)
+            return self._eval(expr.else_expr)
+
+        elif isinstance(expr, ChainedCall):
+            target = self._eval(expr.target)
+            args = [self._eval(a) for a in expr.args]
+            return self._call_on_value(target, expr.method, args)
 
         elif isinstance(expr, MethodCall):
             return self._exec_method_call(expr)
@@ -434,6 +470,89 @@ class ApexInterpreter:
                     return 0
 
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))
+
+    def _call_on_value(self, obj, method, args):
+        """Appelle une méthode sur une valeur (pour le chaînage)."""
+        if isinstance(obj, str):
+            return self._call_string_method(obj, method, args)
+        if isinstance(obj, list):
+            return self._call_list_method(obj, method, args)
+        if isinstance(obj, set):
+            return self._call_set_method(obj, method, args)
+        if isinstance(obj, dict):
+            return self._call_map_method(obj, method, args)
+        raise Exception("Impossible d'appeler .{}() sur {}".format(method, type(obj).__name__))
+
+    def _call_string_method(self, s, method, args):
+        methods = {
+            "length": lambda: len(s),
+            "contains": lambda: args[0] in s if args else False,
+            "startsWith": lambda: s.startswith(args[0]) if args else False,
+            "endsWith": lambda: s.endswith(args[0]) if args else False,
+            "toLowerCase": lambda: s.lower(),
+            "toUpperCase": lambda: s.upper(),
+            "trim": lambda: s.strip(),
+            "substring": lambda: s[int(args[0]):int(args[1])] if len(args) >= 2 else s[int(args[0]):],
+            "indexOf": lambda: s.find(args[0]) if args else -1,
+            "replace": lambda: s.replace(args[0], args[1]) if len(args) >= 2 else s,
+            "split": lambda: s.split(args[0]) if args else [s],
+            "left": lambda: s[:int(args[0])] if args else s,
+            "right": lambda: s[-int(args[0]):] if args else s,
+            "removeStart": lambda: s[len(args[0]):] if args and s.startswith(args[0]) else s,
+            "removeEnd": lambda: s[:-len(args[0])] if args and s.endswith(args[0]) else s,
+            "leftPad": lambda: s.rjust(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
+            "replaceAll": lambda: __import__('re').sub(args[0], args[1], s) if len(args) >= 2 else s,
+        }
+        if method in methods:
+            return methods[method]()
+        raise Exception("String.{}() non supporté".format(method))
+
+    def _call_list_method(self, lst, method, args):
+        methods = {
+            "add": lambda: lst.append(args[0]) if args else None,
+            "addAll": lambda: lst.extend(args[0]) if args else None,
+            "size": lambda: len(lst),
+            "isEmpty": lambda: len(lst) == 0,
+            "get": lambda: lst[int(args[0])] if args else None,
+            "contains": lambda: args[0] in lst if args else False,
+            "remove": lambda: lst.pop(int(args[0])),
+            "clear": lambda: lst.clear(),
+        }
+        if method in methods:
+            return methods[method]()
+        raise Exception("List.{}() non supporté".format(method))
+
+    def _call_set_method(self, s, method, args):
+        methods = {
+            "add": lambda: s.add(args[0]) if args else None,
+            "contains": lambda: args[0] in s if args else False,
+            "size": lambda: len(s),
+            "isEmpty": lambda: len(s) == 0,
+            "remove": lambda: s.discard(args[0]) if args else None,
+            "addAll": lambda: s.update(args[0]) if args and hasattr(args[0], '__iter__') else None,
+        }
+        if method in methods:
+            return methods[method]()
+        raise Exception("Set.{}() non supporté".format(method))
+
+    def _call_map_method(self, m, method, args):
+        if "_sobject_type" in m:
+            val = m.get(method)
+            if val is not None:
+                return val
+        methods = {
+            "put": lambda: m.__setitem__(args[0], args[1]) if len(args) >= 2 else None,
+            "get": lambda: m.get(args[0]) if args else None,
+            "containsKey": lambda: args[0] in m if args else False,
+            "keySet": lambda: set(m.keys()),
+            "values": lambda: list(m.values()),
+            "size": lambda: len(m),
+            "isEmpty": lambda: len(m) == 0,
+            "remove": lambda: m.pop(args[0], None) if args else None,
+        }
+        if method in methods:
+            return methods[method]()
+        raise Exception("Map.{}() non supporté".format(method))
 
     def _invoke_method(self, class_def, method_def, args):
         """Invoque une méthode avec des arguments, retourne la valeur de retour."""
