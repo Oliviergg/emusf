@@ -418,8 +418,8 @@ class ApexParser:
                 ),
             )
 
-        # --- Type var = expr; ---
-        decl_match = re.match(r'(\w+(?:<\w+>)?)\s+(\w+)\s*=\s*(.+?)\s*;?$', stmt)
+        # --- Type var = expr; --- (supports Map<String, String>, List<Account>, etc.)
+        decl_match = re.match(r'(\w+(?:<[\w,\s]+>)?)\s+(\w+)\s*=\s*(.+?)\s*;?$', stmt)
         if decl_match:
             return VarDecl(
                 type_name=decl_match.group(1),

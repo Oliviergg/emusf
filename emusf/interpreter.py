@@ -501,7 +501,7 @@ class ApexInterpreter:
             "substring": lambda: s[int(args[0]):int(args[1])] if len(args) >= 2 else s[int(args[0]):],
             "indexOf": lambda: s.find(args[0]) if args else -1,
             "replace": lambda: s.replace(args[0], args[1]) if len(args) >= 2 else s,
-            "split": lambda: s.split(args[0]) if args else [s],
+            "split": lambda: __import__('re').split(args[0], s) if args else [s],
             "left": lambda: s[:int(args[0])] if args else s,
             "right": lambda: s[-int(args[0]):] if args else s,
             "removeStart": lambda: s[len(args[0]):] if args and s.startswith(args[0]) else s,
