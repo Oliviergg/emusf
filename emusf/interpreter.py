@@ -463,10 +463,10 @@ class ApexInterpreter:
         # Integer static methods
         if call.obj == "Integer":
             if method == "valueOf":
-                try:
-                    return int(args[0]) if args else 0
-                except (ValueError, TypeError):
-                    return 0
+                val = args[0] if args else 0
+                if val is None:
+                    raise ApexException("Argument cannot be null")
+                return int(val)  # Lève ValueError si pas un nombre — comme Apex
 
         # Pattern static methods
         if call.obj == "Pattern":
