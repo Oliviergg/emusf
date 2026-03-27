@@ -246,7 +246,7 @@ class ApexInterpreter:
             return expr.value
 
         elif isinstance(expr, BooleanLiteral):
-            return 1 if expr.value else 0
+            return expr.value
 
         elif isinstance(expr, NullLiteral):
             return None

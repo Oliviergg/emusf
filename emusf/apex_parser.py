@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from .lexer import Lexer, TokenType
+from .token_parser import TokenStream, parse_expression as token_parse_expr
+
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
@@ -625,8 +628,25 @@ class ApexParser:
 
     # --- Expression parser ---
 
-    def _parse_expr(self, expr: str) -> Expr:
-        """Parse une expression Apex en nœud Expr (avec priorité d'opérateurs)."""
+    def _parse_expr(self, expr_str: str) -> Expr:
+        """Parse une expression Apex via le token-based parser."""
+        expr_str = expr_str.strip()
+        if not expr_str:
+            return NullLiteral()
+        try:
+            tokens = Lexer(expr_str).tokenize()
+            stream = TokenStream(tokens)
+            result = token_parse_expr(stream)
+            # Vérifier qu'on a bien consommé tous les tokens
+            if stream.current().type != TokenType.EOF:
+                # Fallback sur l'ancien parser si le token parser ne consomme pas tout
+                return self._parse_expr_legacy(expr_str)
+            return result
+        except Exception:
+            return self._parse_expr_legacy(expr_str)
+
+    def _parse_expr_legacy(self, expr: str) -> Expr:
+        """Ancien parser regex — fallback."""
         expr = expr.strip()
 
         # Parenthèses englobantes
