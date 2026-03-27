@@ -273,16 +273,30 @@ class Lexer:
             break
 
     def _read_string(self) -> Token:
-        """Lit une string literal avec support des escaped quotes."""
+        """Lit une string literal avec support des séquences d'échappement Apex."""
         start_line, start_col = self.line, self.col
         self._advance()  # skip opening '
         value = ""
         while self.pos < len(self.source):
             ch = self.source[self.pos]
-            if ch == "\\" and self._peek(1) == "'":
-                value += "'"
-                self._advance(2)
-                continue
+            if ch == "\\" and self.pos + 1 < len(self.source):
+                next_ch = self.source[self.pos + 1]
+                if next_ch == "'":
+                    value += "'"
+                    self._advance(2)
+                    continue
+                elif next_ch == "\\":
+                    value += "\\"
+                    self._advance(2)
+                    continue
+                elif next_ch == "n":
+                    value += "\n"
+                    self._advance(2)
+                    continue
+                elif next_ch == "t":
+                    value += "\t"
+                    self._advance(2)
+                    continue
             if ch == "'":
                 self._advance()  # skip closing '
                 return Token(TokenType.STRING, value, start_line, start_col)

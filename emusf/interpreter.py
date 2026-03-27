@@ -353,7 +353,7 @@ class ApexInterpreter:
         method = call.method
 
         # Null-safe: appeler une méthode sur null retourne null
-        if obj is None and call.obj not in self.classes and call.obj != "_self" and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime"):
+        if obj is None and call.obj not in self.classes and call.obj != "_self" and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL", "UserInfo"):
             # Vérifier aussi si c'est une méthode de la classe courante
             if not (self._current_class and call.method in self._current_class.methods):
                 return None
@@ -396,6 +396,10 @@ class ApexInterpreter:
                 if args and hasattr(args[0], '__iter__'):
                     obj.update(args[0])
                 return None
+
+        # Special typed objects (Pattern, Matcher, Date, etc.)
+        elif isinstance(obj, dict) and obj.get("_type") in ("Pattern", "Matcher", "Date", "DateTime"):
+            return self._call_map_method(obj, method, args)
 
         # Map methods
         elif isinstance(obj, dict) and "_sobject_type" not in obj:
@@ -463,6 +467,13 @@ class ApexInterpreter:
                     return int(args[0]) if args else 0
                 except (ValueError, TypeError):
                     return 0
+
+        # Pattern static methods
+        if call.obj == "Pattern":
+            if method == "compile":
+                regex_str = args[0] if args else ""
+                import re as _re
+                return {"_type": "Pattern", "_compiled": _re.compile(regex_str), "_pattern": regex_str}
 
         # Date static methods
         if call.obj == "Date":
@@ -549,6 +560,50 @@ class ApexInterpreter:
         raise Exception("Set.{}() non supporté".format(method))
 
     def _call_map_method(self, m, method, args):
+        # Pattern object
+        if m.get("_type") == "Pattern":
+            if method == "matcher":
+                import re as _re
+                text = args[0] if args else ""
+                return {
+                    "_type": "Matcher",
+                    "_compiled": m["_compiled"],
+                    "_text": str(text) if text is not None else "",
+                    "_match": None,
+                }
+            if method == "pattern":
+                return m.get("_pattern", "")
+
+        # Matcher object
+        if m.get("_type") == "Matcher":
+            import re as _re
+            if method == "find":
+                match = m["_compiled"].search(m["_text"])
+                m["_match"] = match
+                return match is not None
+            if method == "group":
+                match = m.get("_match")
+                if match is None:
+                    return None
+                idx = int(args[0]) if args else 0
+                try:
+                    return match.group(idx)
+                except (IndexError, _re.error):
+                    return None
+            if method == "matches":
+                match = m["_compiled"].fullmatch(m["_text"])
+                m["_match"] = match
+                return match is not None
+
+        # Date object
+        if m.get("_type") == "Date":
+            if method == "year":
+                return m.get("year")
+            if method == "month":
+                return m.get("month")
+            if method == "day":
+                return m.get("day")
+
         if "_sobject_type" in m:
             val = m.get(method)
             if val is not None:

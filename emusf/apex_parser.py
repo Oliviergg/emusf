@@ -235,32 +235,41 @@ class ApexParser:
         return stmts
 
     def _split_statements(self, block: str) -> list:
-        """Découpe un bloc en statements bruts (gère les { } imbriqués et else)."""
+        """Découpe un bloc en statements bruts (gère les { }, strings et else/catch)."""
         statements = []
         depth = 0
         current = ""
+        in_string = False
         i = 0
 
         while i < len(block):
             char = block[i]
             current += char
 
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    # Vérifier si un 'else' ou 'catch' suit
-                    rest = block[i + 1:].lstrip()
-                    if rest.startswith("else") or rest.startswith("catch"):
-                        # Ne pas couper ici — continuer pour inclure le else
-                        pass
-                    else:
-                        statements.append(current.strip())
-                        current = ""
-            elif char == ";" and depth == 0:
-                statements.append(current.strip())
-                current = ""
+            if in_string:
+                if char == "\\" and i + 1 < len(block) and block[i + 1] == "'":
+                    current += block[i + 1]
+                    i += 2
+                    continue
+                if char == "'":
+                    in_string = False
+            else:
+                if char == "'":
+                    in_string = True
+                elif char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        rest = block[i + 1:].lstrip()
+                        if rest.startswith("else") or rest.startswith("catch"):
+                            pass
+                        else:
+                            statements.append(current.strip())
+                            current = ""
+                elif char == ";" and depth == 0:
+                    statements.append(current.strip())
+                    current = ""
 
             i += 1
 
