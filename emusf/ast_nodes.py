@@ -178,3 +178,25 @@ class TryCatch(Stmt):
 @dataclass
 class Block(Stmt):
     statements: list  # list[Stmt]
+
+
+# --- Class-level structures ---
+
+@dataclass
+class MethodDef:
+    """Définition d'une méthode Apex."""
+    name: str
+    return_type: str  # 'void', 'String', 'Integer', etc.
+    params: list  # list[(type, name)]
+    body: list  # list[Stmt]
+    is_static: bool = True
+    access: str = "public"
+
+
+@dataclass
+class ClassDef:
+    """Définition d'une classe Apex."""
+    name: str
+    constants: dict  # {name: (type, Expr)}
+    methods: dict  # {name: MethodDef}
+    sharing: Optional[str] = None  # 'with sharing', 'without sharing'

@@ -12,6 +12,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
+    MethodDef, ClassDef,
 )
 
 
@@ -26,8 +27,138 @@ class ApexParser:
         statements = self._parse_block(body)
         return Block(statements=statements)
 
+    def parse_full_class(self, source: str) -> ClassDef:
+        """Parse une classe Apex complète : constantes, méthodes, etc."""
+        # Extraire le nom et le body de la classe
+        class_match = re.search(
+            r'(?:public|private|global)\s+(?:with\s+sharing\s+|without\s+sharing\s+)?'
+            r'class\s+(\w+)(?:\s+extends\s+\w+)?\s*\{',
+            source
+        )
+        if not class_match:
+            raise Exception("Classe non trouvée dans le source")
+
+        class_name = class_match.group(1)
+        sharing = None
+        if "with sharing" in source[:class_match.start() + 50]:
+            sharing = "with sharing"
+
+        # Extraire le body de la classe
+        start = class_match.end()
+        depth = 1
+        i = start
+        while i < len(source) and depth > 0:
+            if source[i] == "{":
+                depth += 1
+            elif source[i] == "}":
+                depth -= 1
+            i += 1
+        class_body = source[start:i - 1]
+
+        # Parser les membres
+        constants = {}
+        methods = {}
+
+        self._parse_class_members(class_body, constants, methods)
+
+        return ClassDef(
+            name=class_name,
+            constants=constants,
+            methods=methods,
+            sharing=sharing,
+        )
+
+    def _parse_class_members(self, body: str, constants: dict, methods: dict):
+        """Parse les membres d'une classe (constantes et méthodes)."""
+        # Strip comments
+        lines = body.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("//")]
+        body = "\n".join(lines)
+
+        # Trouver les méthodes
+        method_pattern = re.compile(
+            r'(?:(?:public|private|protected|global)\s+)?'
+            r'(?:static\s+)?'
+            r'(\w+(?:<[\w,\s]+>)?)\s+'  # return type
+            r'(\w+)\s*'  # method name
+            r'\(([^)]*)\)\s*\{',  # params
+            re.DOTALL
+        )
+
+        pos = 0
+        method_positions = []
+        for m in method_pattern.finditer(body):
+            return_type = m.group(1)
+            method_name = m.group(2)
+            params_str = m.group(3)
+
+            # Skip inner class definitions
+            if return_type == "class":
+                continue
+
+            # Extraire le body de la méthode
+            body_start = m.end()
+            depth = 1
+            j = body_start
+            while j < len(body) and depth > 0:
+                if body[j] == "{":
+                    depth += 1
+                elif body[j] == "}":
+                    depth -= 1
+                j += 1
+            method_body = body[body_start:j - 1]
+
+            # Parser les paramètres
+            params = []
+            if params_str.strip():
+                for p in params_str.split(","):
+                    p = p.strip()
+                    parts = p.rsplit(None, 1)
+                    if len(parts) == 2:
+                        params.append((parts[0], parts[1]))
+
+            # Déterminer les modifiers
+            prefix = body[max(0, m.start() - 100):m.start()]
+            is_static = "static" in m.group(0) or "static" in prefix.split("\n")[-1]
+
+            method_stmts = self._parse_block(method_body)
+            methods[method_name] = MethodDef(
+                name=method_name,
+                return_type=return_type,
+                params=params,
+                body=method_stmts,
+                is_static=is_static,
+            )
+            method_positions.append((m.start(), j))
+
+        # Trouver les constantes (lignes hors des méthodes)
+        const_pattern = re.compile(
+            r'(?:public|private|protected)?\s*'
+            r'(?:static\s+)?(?:final\s+)?'
+            r'(\w+(?:<[\w,\s]+>)?)\s+'
+            r'(\w+)\s*=\s*(.+?)\s*;',
+            re.DOTALL
+        )
+        for m in const_pattern.finditer(body):
+            # Vérifier qu'on n'est pas dans une méthode
+            in_method = False
+            for mstart, mend in method_positions:
+                if mstart <= m.start() <= mend:
+                    in_method = True
+                    break
+            if not in_method:
+                type_name = m.group(1)
+                var_name = m.group(2)
+                value_str = m.group(3).strip()
+                try:
+                    value_expr = self._parse_expr(value_str)
+                    constants[var_name] = (type_name, value_expr)
+                except Exception:
+                    pass
+
     def _extract_method(self, source: str, method_name: str) -> Optional[str]:
-        pattern = r'(?:public|private)\s+static\s+\w+\s+{}\s*\(\s*\)\s*\{{'.format(
+        # Supporte les méthodes avec ou sans paramètres
+        pattern = r'(?:public|private)\s+static\s+\w+\s+{}\s*\([^)]*\)\s*\{{'.format(
             re.escape(method_name)
         )
         match = re.search(pattern, source)

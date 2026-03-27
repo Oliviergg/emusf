@@ -11,6 +11,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
+    MethodDef, ClassDef,
 )
 
 
@@ -32,6 +33,34 @@ class ApexInterpreter:
         self.parser = ApexParser()
         self.variables = {}
         self.output = []
+        self.classes = {}  # {class_name: ClassDef}
+        self._current_class = None  # ClassDef en cours d'exécution
+
+    def load_class(self, path_or_source: str, is_path: bool = True):
+        """Charge une classe Apex dans l'interpréteur."""
+        if is_path:
+            with open(path_or_source) as f:
+                source = path_or_source = f.read()
+        else:
+            source = path_or_source
+        class_def = self.parser.parse_full_class(source)
+        self.classes[class_def.name] = class_def
+        # Charger les constantes dans les variables sous namespace ClassName.CONST
+        for name, (type_name, expr) in class_def.constants.items():
+            self.variables["{}.{}".format(class_def.name, name)] = self._eval(expr)
+        return class_def
+
+    def call_method(self, class_name: str, method_name: str, args: list = None):
+        """Appelle une méthode statique d'une classe chargée."""
+        if args is None:
+            args = []
+        class_def = self.classes.get(class_name)
+        if not class_def:
+            raise Exception("Classe '{}' non chargée".format(class_name))
+        method = class_def.methods.get(method_name)
+        if not method:
+            raise Exception("Méthode '{}.{}' non trouvée".format(class_name, method_name))
+        return self._invoke_method(class_def, method, args)
 
     def execute_file(self, path: str, method: str = "run"):
         """Charge un .cls, parse en AST, puis exécute."""
@@ -179,9 +208,15 @@ class ApexInterpreter:
             return self.variables.get(expr.name)
 
         elif isinstance(expr, FieldAccess):
+            # Constante de classe : ClassName.CONST
+            class_key = "{}.{}".format(expr.obj, expr.field)
+            if class_key in self.variables:
+                return self.variables[class_key]
             obj = self.variables.get(expr.obj)
             if isinstance(obj, dict):
                 return obj.get(expr.field, "null")
+            if isinstance(obj, list):
+                return "null"
             return "null"
 
         elif isinstance(expr, UnaryOp):
@@ -320,7 +355,73 @@ class ApexInterpreter:
             if val is not None:
                 return val
 
+        # Appel de méthode statique sur une classe chargée
+        if call.obj in self.classes:
+            return self.call_method(call.obj, method, args)
+
+        # Appel de méthode de la même classe (sans préfixe)
+        if self._current_class and method in self._current_class.methods:
+            return self._invoke_method(self._current_class, self._current_class.methods[method], args)
+
+        # String static methods
+        if call.obj == "String":
+            if method == "isBlank":
+                v = args[0] if args else None
+                return v is None or (isinstance(v, str) and v.strip() == "")
+            elif method == "isNotBlank":
+                v = args[0] if args else None
+                return v is not None and isinstance(v, str) and v.strip() != ""
+            elif method == "valueOf":
+                return str(args[0]) if args else ""
+            elif method == "join":
+                if len(args) >= 2:
+                    lst = args[0]
+                    sep = args[1]
+                    if isinstance(lst, list):
+                        return sep.join(str(x) for x in lst)
+                return ""
+
+        # Integer static methods
+        if call.obj == "Integer":
+            if method == "valueOf":
+                try:
+                    return int(args[0]) if args else 0
+                except (ValueError, TypeError):
+                    return 0
+
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))
+
+    def _invoke_method(self, class_def, method_def, args):
+        """Invoque une méthode avec des arguments, retourne la valeur de retour."""
+        # Sauvegarder les variables actuelles
+        saved_vars = dict(self.variables)
+        saved_class = self._current_class
+        self._current_class = class_def
+
+        # Injecter les paramètres
+        for i, (ptype, pname) in enumerate(method_def.params):
+            self.variables[pname] = args[i] if i < len(args) else None
+
+        # Injecter les constantes de la classe
+        for name, (type_name, expr) in class_def.constants.items():
+            key = "{}.{}".format(class_def.name, name)
+            if key not in self.variables:
+                self.variables[key] = self._eval(expr)
+            # Aussi accessible sans préfixe dans la classe
+            self.variables[name] = self.variables[key]
+
+        result = None
+        try:
+            for stmt in method_def.body:
+                self._exec_stmt(stmt)
+        except ReturnException as ret:
+            result = ret.value
+
+        # Restaurer les variables (garder les changements sur les objets partagés)
+        self._current_class = saved_class
+        self.variables = saved_vars
+
+        return result
 
     def _is_truthy(self, val) -> bool:
         """Évalue la vérité d'une valeur Apex."""
