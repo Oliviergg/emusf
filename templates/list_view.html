@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}{{ config.label }}s{% endblock %}
+
+{% block content %}
+{% set icon_parts = config.icon.split(':') %}
+{% set icon_class = sobject.lower() if sobject.lower() in ['account','contract','contact','opportunity'] else 'default' %}
+<div style="display:flex; align-items:center; gap:0.75rem; background:white; border:1px solid #e5e5e5; border-radius:4px; padding:0.75rem 1rem; margin-bottom:0.75rem;">
+    <div class="sf-record-icon {{ icon_class }}" style="width:36px;height:36px;">
+        {{ slds_icon(icon_parts[0], icon_parts[1], 'small', 'slds-icon') }}
+    </div>
+    <div style="flex:1;">
+        <div style="font-size:0.6875rem; color:#706e6b;">{{ config.label }}s</div>
+        <div style="font-size:1rem; font-weight:700; color:#080707;">
+            {{ total }} enregistrement{{ 's' if total > 1 else '' }}
+        </div>
+    </div>
+    <form method="GET" style="display:flex; gap:0.375rem;">
+        <input type="text" name="q" value="{{ search }}" placeholder="Rechercher un {{ config.label|lower }}..." class="slds-input" style="width:280px; height:32px; font-size:0.8125rem;">
+        <button type="submit" class="slds-button slds-button_neutral" style="height:32px; font-size:0.8125rem;">Chercher</button>
+        {% if search %}<a href="/{{ sobject.lower() }}" class="slds-button slds-button_neutral" style="height:32px; font-size:0.8125rem;">Effacer</a>{% endif %}
+    </form>
+</div>
+
+{% if rows %}
+<div class="sf-section" style="overflow-x:auto;">
+    <table class="slds-table slds-table_cell-buffer slds-table_bordered slds-table_fixed-layout" style="font-size:0.8125rem;">
+        <thead>
+            <tr>
+                {% for col in display_cols %}
+                <th scope="col" style="font-size:0.6875rem; font-weight:600; color:#444746; text-transform:uppercase; letter-spacing:0.5px;">
+                    {{ field_labels.get(col, {}).get('label', col) }}
+                </th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr style="cursor:pointer;" onclick="window.location='/{{ sobject.lower() }}/{{ row.get('id','') }}'">
+                {% for col in display_cols %}
+                <td style="padding:0.375rem 0.5rem;">
+                    {% if col == 'id' %}
+                        <a href="/{{ sobject.lower() }}/{{ row[col] }}" style="color:#0176d3;" onclick="event.stopPropagation()">{{ row[col][:18] }}</a>
+                    {% elif col == 'name' %}
+                        <a href="/{{ sobject.lower() }}/{{ row.get('id', '') }}" style="color:#0176d3; font-weight:600;" onclick="event.stopPropagation()">{{ row[col] or '—' }}</a>
+                    {% else %}
+                        {{ row.get(col, '')|sfvalue }}
+                    {% endif %}
+                </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if total_pages > 1 %}
+<div style="display:flex; justify-content:center; align-items:center; gap:0.5rem; margin-top:0.75rem;">
+    {% if page > 1 %}
+    <a href="?page={{ page - 1 }}{% if search %}&q={{ search }}{% endif %}" class="slds-button slds-button_neutral" style="font-size:0.8125rem;">Précédent</a>
+    {% endif %}
+    <span style="font-size:0.8125rem; color:#444746; padding:0 0.5rem;">{{ page }} / {{ total_pages }}</span>
+    {% if page < total_pages %}
+    <a href="?page={{ page + 1 }}{% if search %}&q={{ search }}{% endif %}" class="slds-button slds-button_neutral" style="font-size:0.8125rem;">Suivant</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="sf-section">
+    <div class="empty-state">
+        {{ slds_icon('utility', 'search', 'large', 'slds-icon-text-light') }}
+        <p style="font-size:1rem; font-weight:600; color:#444746; margin-top:0.75rem;">Aucun enregistrement trouvé</p>
+        {% if search %}
+        <p style="font-size:0.8125rem; margin-top:0.375rem;">
+            Aucun résultat pour "<strong>{{ search }}</strong>" &mdash; <a href="/{{ sobject.lower() }}" style="color:#0176d3;">voir tous</a>
+        </p>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+{% endblock %}

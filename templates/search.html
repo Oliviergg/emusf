@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Recherche{% endblock %}
+
+{% block content %}
+<div style="background:white; border:1px solid #e5e5e5; border-radius:4px; padding:1rem; margin-bottom:0.75rem;">
+    <h1 style="font-size:1rem; font-weight:700; margin-bottom:0.75rem;">Recherche globale</h1>
+    <form method="GET" style="display:flex; gap:0.5rem; max-width:600px;">
+        <input type="text" name="q" value="{{ q }}" placeholder="Rechercher un compte, contact, contrat..." class="slds-input" style="flex:1; height:36px;" autofocus>
+        <button type="submit" class="slds-button slds-button_brand" style="height:36px;">Rechercher</button>
+    </form>
+</div>
+
+{% if q %}
+    {% if results %}
+        {% for sobj, rows in results.items() %}
+        {% set conf = sobject_config.get(sobj, {'label': sobj, 'icon': 'standard:record'}) %}
+        {% set icon_parts = conf.icon.split(':') %}
+        {% set icon_class = sobj.lower() if sobj.lower() in ['account','contract','contact','opportunity'] else 'default' %}
+        <div class="sf-related-card">
+            <div class="sf-related-header">
+                <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <div class="sf-record-icon {{ icon_class }}" style="width:24px;height:24px;border-radius:4px;">
+                        {{ slds_icon(icon_parts[0], icon_parts[1], 'x-small', 'slds-icon') }}
+                    </div>
+                    <span class="sf-related-title">{{ conf.label }}s</span>
+                    <span class="sf-related-count">({{ rows|length }})</span>
+                </div>
+            </div>
+            <table class="slds-table slds-table_cell-buffer slds-table_bordered" style="font-size:0.8125rem;">
+                <thead>
+                    <tr>
+                        <th scope="col" style="font-size:0.6875rem; font-weight:600; color:#444746; text-transform:uppercase;">Nom</th>
+                        <th scope="col" style="font-size:0.6875rem; font-weight:600; color:#444746; text-transform:uppercase;">ID</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in rows %}
+                    <tr>
+                        <td><a href="/{{ sobj.lower() }}/{{ row.id }}" style="color:#0176d3; font-weight:600;">{{ row.name or '—' }}</a></td>
+                        <td><span style="color:#706e6b; font-size:0.75rem;">{{ row.id }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <div style="padding:0.5rem 0.75rem; border-top:1px solid #e5e5e5;">
+                <a href="/{{ sobj.lower() }}?q={{ q }}" style="color:#0176d3; font-size:0.8125rem;">Voir tous les résultats {{ conf.label }}</a>
+            </div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="sf-section">
+            <div class="empty-state">
+                {{ slds_icon('utility', 'search', 'large', 'slds-icon-text-light') }}
+                <p style="font-size:1rem; font-weight:600; color:#444746; margin-top:0.75rem;">Aucun résultat pour "{{ q }}"</p>
+            </div>
+        </div>
+    {% endif %}
+{% endif %}
+{% endblock %}

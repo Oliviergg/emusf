@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}{{ record_name }} — {{ config.label }}{% endblock %}
+
+{% block content %}
+{# === Record Header === #}
+{% set icon_parts = config.icon.split(':') %}
+{% set icon_class = sobject.lower() if sobject.lower() in ['account','contract','contact','opportunity'] else 'default' %}
+<div class="sf-record-header">
+    <div class="sf-record-icon {{ icon_class }}">
+        {{ slds_icon(icon_parts[0], icon_parts[1], '', 'slds-icon') }}
+    </div>
+    <div style="flex:1; min-width:0;">
+        <div class="sf-record-subtitle">{{ config.label }}</div>
+        <div class="sf-record-title slds-truncate" title="{{ record_name }}">{{ record_name }}</div>
+        {# Highlights panel #}
+        {% set highlight_fields = [] %}
+        {% if layout.sections %}
+            {% for item in layout.sections[0].columns[0].items[:2] + (layout.sections[0].columns[1].items[:2] if layout.sections[0].columns|length > 1 else []) %}
+                {% if item.field and item.field != config.get('name_field', 'Name') and highlight_fields|length < 5 %}
+                    {% if highlight_fields.append(item) %}{% endif %}
+                {% endif %}
+            {% endfor %}
+        {% endif %}
+        {% if highlight_fields %}
+        <div class="sf-highlights">
+            {% for item in highlight_fields %}
+            {% set fmeta = field_labels.get(item.field, {}) %}
+            {% set label = fmeta.get('label', item.field) %}
+            {% set val = record.get(item.field) or record.get(item.field.lower()) %}
+            <div class="sf-highlight-item">
+                <div class="sf-field-label">{{ label }}</div>
+                <div class="sf-field-value">
+                    {% if val is none or val == '' %}<span class="sf-field-empty">&mdash;</span>{% else %}{{ val|sfvalue(fmeta.get('type','Text')) }}{% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div style="display:flex; align-items:center; gap:0.75rem; margin-left:auto;">
+        <div class="layout-select">
+            {{ slds_icon('utility', 'layout', 'x-small') }}
+            <select onchange="if(this.value) window.location.search='?layout='+this.value">
+                {% for l in available_layouts %}
+                <option value="{{ l.path }}" {% if layout.name == l.name %}selected{% endif %}>{{ l.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {% set edit_url = '/' + sobject.lower() + '/' + record_id + '/edit' if sobject in sobject_config else '/sobject/' + sobject + '/' + record_id + '/edit' %}
+        <a href="{{ edit_url }}" class="slds-button slds-button_neutral" style="display:inline-flex; align-items:center; gap:0.25rem;">
+            {{ slds_icon('utility', 'edit', 'x-small') }}
+            Modifier
+        </a>
+    </div>
+</div>
+
+{# === Tabs === #}
+<div class="sf-tabs">
+    <a class="sf-tab active" data-tab="details" onclick="switchTab('details')">Details</a>
+    <a class="sf-tab" data-tab="related" onclick="switchTab('related')">
+        Related
+        {% if layout.related_lists %}<span style="font-weight:400;color:#706e6b;"> ({{ layout.related_lists|length }})</span>{% endif %}
+    </a>
+</div>
+
+{# === Details Tab === #}
+<div id="tab-details" class="tab-content active">
+{% for section in layout.sections %}
+<div class="sf-section" id="section-{{ loop.index }}">
+    {% if section.detail_heading %}
+    <div class="sf-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+        <svg class="chevron" viewBox="0 0 16 16"><path d="M4.7 3.3a1 1 0 011.4 0L11 8.2a1 1 0 010 1.4L6.1 14.5a1 1 0 01-1.4-1.4L9.2 8.9 4.7 4.7a1 1 0 010-1.4z"/></svg>
+        {{ section.label }}
+    </div>
+    {% endif %}
+    <div class="sf-section-body">
+        {% set col_count = section.columns|length %}
+        {% if section.style == 'OneColumn' %}
+            {% for col in section.columns %}
+            {% for item in col.items %}
+            {% if item.field and not item.empty_space %}
+                {% set fmeta = field_labels.get(item.field, {}) %}
+                {% set label = fmeta.get('label', item.field) %}
+                {% set val = record.get(item.field) or record.get(item.field.lower()) %}
+                <div class="sf-field">
+                    <div class="sf-field-label">
+                        {% if item.behavior == 'Required' %}<span class="badge-required"></span>{% endif %}
+                        {{ label }}
+                    </div>
+                    <div class="sf-field-value">{{ render_field_value(val, item, fmeta, record) }}</div>
+                </div>
+            {% endif %}
+            {% endfor %}
+            {% endfor %}
+        {% else %}
+            <div class="sf-section-grid">
+                {% for col in section.columns %}
+                <div>
+                    {% for item in col.items %}
+                    {% if item.empty_space %}
+                        <div class="sf-field">&nbsp;</div>
+                    {% elif item.field %}
+                        {% set fmeta = field_labels.get(item.field, {}) %}
+                        {% set label = fmeta.get('label', item.field) %}
+                        {% set val = record.get(item.field) or record.get(item.field.lower()) %}
+                        <div class="sf-field">
+                            <div class="sf-field-label">
+                                {% if item.behavior == 'Required' %}<span class="badge-required"></span>{% endif %}
+                                {{ label }}
+                            </div>
+                            <div class="sf-field-value">{{ render_field_value(val, item, fmeta, record) }}</div>
+                        </div>
+                    {% endif %}
+                    {% endfor %}
+                </div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endfor %}
+</div>
+
+{# === Related Tab === #}
+<div id="tab-related" class="tab-content">
+{% if layout.related_lists %}
+    {% for rl in layout.related_lists %}
+    {% set rl_rows = related_data.get(rl.related_list, []) %}
+    <div class="sf-related-card">
+        <div class="sf-related-header">
+            <div style="display:flex; align-items:center; gap:0.5rem;">
+                {{ slds_icon('utility', 'table', 'x-small') }}
+                <span class="sf-related-title">{{ rl.related_list }}</span>
+                <span class="sf-related-count">({{ rl_rows|length }})</span>
+            </div>
+        </div>
+        {% if rl_rows %}
+        {% set display_keys = [] %}
+        {% for k in rl_rows[0].keys() %}
+            {% if not k.startswith('_') and display_keys|length < 7 %}
+                {% if display_keys.append(k) %}{% endif %}
+            {% endif %}
+        {% endfor %}
+        <table class="slds-table slds-table_cell-buffer slds-table_bordered slds-no-row-hover" style="font-size:0.8125rem;">
+            <thead>
+                <tr>
+                    {% for k in display_keys %}
+                    <th scope="col" style="font-size:0.6875rem; font-weight:600; color:#444746; text-transform:uppercase; letter-spacing:0.5px;">
+                        {{ field_labels.get(k, {}).get('label', k) }}
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rl_rows %}
+                <tr>
+                    {% for k in display_keys %}
+                    <td style="padding:0.375rem 0.5rem;">
+                        {% if k == 'id' %}
+                            {% set child_obj = rl.related_list.split('.')[0] if '.' in rl.related_list else '' %}
+                            <a href="/sobject/{{ child_obj.lower() }}/{{ row[k] }}" style="color:#0176d3;">{{ row[k][:15] }}...</a>
+                        {% elif k == 'name' %}
+                            {% set child_obj = rl.related_list.split('.')[0] if '.' in rl.related_list else '' %}
+                            <a href="/sobject/{{ child_obj.lower() }}/{{ row.get('id', '') }}" style="color:#0176d3;">{{ row[k] or '—' }}</a>
+                        {% else %}
+                            {{ row.get(k, '')|sfvalue }}
+                        {% endif %}
+                    </td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="padding:1.5rem; text-align:center; color:#706e6b; font-size:0.8125rem;">Aucun enregistrement</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="empty-state">Aucune liste associée</div>
+{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchTab(name) {
+    document.querySelectorAll('.sf-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + name));
+}
+</script>
+{% endblock %}
+
+{% macro render_field_value(val, item, fmeta, record) %}
+    {% set ftype = fmeta.get('type', 'Text') if fmeta else 'Text' %}
+    {% set ref = fmeta.get('referenceTo') if fmeta else None %}
+    {% if val is none or val == '' %}
+        <span class="sf-field-empty">&mdash;</span>
+    {% elif ftype == 'Checkbox' or val is sameas true or val is sameas false %}
+        {% if val %}
+            {{ slds_icon('utility', 'check', 'x-small', 'slds-icon-text-success') }}
+        {% else %}
+            {{ slds_icon('utility', 'close', 'x-small', 'slds-icon-text-light') }}
+        {% endif %}
+    {% elif ftype == 'Url' %}
+        <a href="{{ val }}" target="_blank">{{ val }}</a>
+    {% elif ftype == 'Phone' %}
+        <a href="tel:{{ val }}">{{ val }}</a>
+    {% elif ftype == 'Email' %}
+        <a href="mailto:{{ val }}">{{ val }}</a>
+    {% elif ftype == 'Currency' %}
+        {{ val|sfvalue('Currency') }}
+    {% elif ref and val %}
+        <a href="/sobject/{{ ref.lower() }}/{{ val }}">{{ val }}</a>
+    {% else %}
+        {{ val|sfvalue(ftype) }}
+    {% endif %}
+{% endmacro %}
