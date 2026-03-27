@@ -6,10 +6,10 @@ from .org import FakeOrg
 from .apex_parser import ApexParser
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
-    Variable, FieldAccess, BinaryOp, NewSObject,
+    Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
-    SystemDebug, ForEach, Block,
+    SystemDebug, ForEach, IfElse, Block,
 )
 
 
@@ -69,8 +69,19 @@ class ApexInterpreter:
             self.output.append(str(value))
             print("DEBUG: {}".format(value))
 
+        elif isinstance(stmt, IfElse):
+            cond = self._eval(stmt.condition)
+            if self._is_truthy(cond):
+                for s in stmt.then_body:
+                    self._exec_stmt(s)
+            else:
+                for s in stmt.else_body:
+                    self._exec_stmt(s)
+
         elif isinstance(stmt, ForEach):
-            items = self.variables.get(stmt.list_var, [])
+            items = self._eval(stmt.list_expr)
+            if items is None:
+                items = []
             for item in items:
                 self.variables[stmt.iter_var] = item
                 for body_stmt in stmt.body:
@@ -141,11 +152,36 @@ class ApexInterpreter:
                 return obj.get(expr.field, "null")
             return "null"
 
+        elif isinstance(expr, UnaryOp):
+            val = self._eval(expr.operand)
+            if expr.op == "!":
+                return not self._is_truthy(val)
+            raise Exception("Opérateur unaire inconnu: {}".format(expr.op))
+
         elif isinstance(expr, BinaryOp):
             left = self._eval(expr.left)
             right = self._eval(expr.right)
             if expr.op == "+":
+                # Si les deux sont des nombres, additionner
+                if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+                    return left + right
                 return str(left) + str(right)
+            elif expr.op == "==":
+                return left == right
+            elif expr.op == "!=":
+                return left != right
+            elif expr.op == "<":
+                return left < right
+            elif expr.op == ">":
+                return left > right
+            elif expr.op == "<=":
+                return left <= right
+            elif expr.op == ">=":
+                return left >= right
+            elif expr.op == "&&":
+                return self._is_truthy(left) and self._is_truthy(right)
+            elif expr.op == "||":
+                return self._is_truthy(left) or self._is_truthy(right)
             raise Exception("Opérateur inconnu: {}".format(expr.op))
 
         elif isinstance(expr, NewSObject):
@@ -156,3 +192,15 @@ class ApexInterpreter:
 
         else:
             raise Exception("Expression inconnue: {}".format(type(expr).__name__))
+
+    def _is_truthy(self, val) -> bool:
+        """Évalue la vérité d'une valeur Apex."""
+        if val is None:
+            return False
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return val != 0
+        if isinstance(val, str):
+            return len(val) > 0
+        return True

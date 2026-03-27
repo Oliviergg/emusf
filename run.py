@@ -1,8 +1,11 @@
 """Exécute un fichier Apex via l'émulateur."""
 
 import sys
+import glob
 
-from emusf import FakeOrg, ApexInterpreter
+from emusf import FakeOrg, ApexParser, ApexInterpreter
+from emusf.ast_printer import print_ast
+from emusf.trigger_parser import load_trigger
 
 # --- Setup org avec des données ---
 org = FakeOrg()
@@ -20,11 +23,28 @@ org.insert("Contact", [
     {"Id": "003002", "LastName": "Martin", "AccountId": "001001"},
 ])
 
+# --- Charger tous les triggers ---
+for trigger_file in sorted(glob.glob("apex/*.trigger")):
+    load_trigger(org, trigger_file)
+
 # --- Exécuter le fichier Apex ---
 apex_file = sys.argv[1] if len(sys.argv) > 1 else "apex/AccountDemo.cls"
 method = sys.argv[2] if len(sys.argv) > 2 else "run"
 
-print("=== Exécution: {} → {}() ===\n".format(apex_file, method))
+print("\n=== Exécution: {} -> {}() ===\n".format(apex_file, method))
 
+# --- Parser: Apex → AST ---
+with open(apex_file) as f:
+    source = f.read()
+
+parser = ApexParser()
+ast = parser.parse_class(source, method)
+
+print("--- AST ---")
+print_ast(ast)
+print()
+
+# --- Interpréteur: AST → exécution ---
+print("--- Exécution ---")
 interpreter = ApexInterpreter(org)
-interpreter.execute_file(apex_file, method)
+interpreter._exec_block(ast)

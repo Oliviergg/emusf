@@ -7,10 +7,10 @@ from typing import Optional
 
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
-    Variable, FieldAccess, BinaryOp, NewSObject,
+    Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
-    SystemDebug, ForEach, Block,
+    SystemDebug, ForEach, IfElse, Block,
 )
 
 
@@ -65,23 +65,34 @@ class ApexParser:
         return stmts
 
     def _split_statements(self, block: str) -> list:
-        """Découpe un bloc en statements bruts (gère les { } imbriqués)."""
+        """Découpe un bloc en statements bruts (gère les { } imbriqués et else)."""
         statements = []
         depth = 0
         current = ""
+        i = 0
 
-        for char in block:
+        while i < len(block):
+            char = block[i]
             current += char
+
             if char == "{":
                 depth += 1
             elif char == "}":
                 depth -= 1
                 if depth == 0:
-                    statements.append(current.strip())
-                    current = ""
+                    # Vérifier si un 'else' suit (pour if/else)
+                    rest = block[i + 1:].lstrip()
+                    if rest.startswith("else"):
+                        # Ne pas couper ici — continuer pour inclure le else
+                        pass
+                    else:
+                        statements.append(current.strip())
+                        current = ""
             elif char == ";" and depth == 0:
                 statements.append(current.strip())
                 current = ""
+
+            i += 1
 
         if current.strip():
             statements.append(current.strip())
@@ -91,19 +102,25 @@ class ApexParser:
     def _parse_statement(self, stmt: str) -> Optional[Stmt]:
         """Parse un statement brut en nœud AST."""
 
-        # --- for (Type var : list) { body } ---
+        # --- for (Type var : expr) { body } ---
         for_match = re.match(
-            r'for\s*\(\s*(\w+)\s+(\w+)\s*:\s*(\w+)\s*\)\s*\{(.*)\}',
+            r'for\s*\(\s*(\w+)\s+(\w+)\s*:\s*(.+?)\s*\)\s*\{(.*)\}',
             stmt, re.DOTALL
         )
         if for_match:
             body_stmts = self._parse_block(for_match.group(4))
+            list_expr = self._parse_expr(for_match.group(3))
             return ForEach(
                 iter_type=for_match.group(1),
                 iter_var=for_match.group(2),
-                list_var=for_match.group(3),
+                list_expr=list_expr,
                 body=body_stmts,
             )
+
+        # --- if (...) { ... } else if (...) { ... } else { ... } ---
+        if_match = re.match(r'if\s*\((.+?)\)\s*\{', stmt)
+        if if_match:
+            return self._parse_if(stmt)
 
         # --- System.debug(...) ---
         debug_match = re.match(r"System\.debug\((.+)\)", stmt.rstrip(";"))
@@ -182,20 +199,115 @@ class ApexParser:
 
         return None
 
+    def _parse_if(self, stmt: str) -> IfElse:
+        """Parse if (...) { ... } else if (...) { ... } else { ... }"""
+        pos = 0
+
+        # Trouver la condition entre parenthèses
+        cond_start = stmt.index("(", pos) + 1
+        depth = 1
+        i = cond_start
+        while i < len(stmt) and depth > 0:
+            if stmt[i] == "(":
+                depth += 1
+            elif stmt[i] == ")":
+                depth -= 1
+            i += 1
+        condition_str = stmt[cond_start:i - 1]
+        condition = self._parse_expr(condition_str)
+
+        # Trouver le bloc then { ... }
+        then_start = stmt.index("{", i - 1) + 1
+        depth = 1
+        j = then_start
+        while j < len(stmt) and depth > 0:
+            if stmt[j] == "{":
+                depth += 1
+            elif stmt[j] == "}":
+                depth -= 1
+            j += 1
+        then_body = self._parse_block(stmt[then_start:j - 1])
+
+        # Chercher else
+        else_body = []
+        rest = stmt[j:].strip()
+        if rest.startswith("else"):
+            rest = rest[4:].strip()
+            if rest.startswith("if"):
+                # else if → récursif, encapsulé dans la else_body
+                else_body = [self._parse_if(rest)]
+            elif rest.startswith("{"):
+                # else { ... }
+                block_start = 1
+                depth = 1
+                k = block_start
+                while k < len(rest) and depth > 0:
+                    if rest[k] == "{":
+                        depth += 1
+                    elif rest[k] == "}":
+                        depth -= 1
+                    k += 1
+                else_body = self._parse_block(rest[block_start:k - 1])
+
+        return IfElse(condition=condition, then_body=then_body, else_body=else_body)
+
     # --- Expression parser ---
 
     def _parse_expr(self, expr: str) -> Expr:
-        """Parse une expression Apex en nœud Expr."""
+        """Parse une expression Apex en nœud Expr (avec priorité d'opérateurs)."""
         expr = expr.strip()
 
-        # Concaténation avec +
+        # Parenthèses englobantes
+        if expr.startswith("(") and self._matching_paren(expr, 0) == len(expr) - 1:
+            return self._parse_expr(expr[1:-1])
+
+        # || (priorité la plus basse)
+        parts = self._split_op(expr, "||")
+        if len(parts) > 1:
+            left = self._parse_expr(parts[0])
+            for p in parts[1:]:
+                left = BinaryOp(left=left, op="||", right=self._parse_expr(p))
+            return left
+
+        # &&
+        parts = self._split_op(expr, "&&")
+        if len(parts) > 1:
+            left = self._parse_expr(parts[0])
+            for p in parts[1:]:
+                left = BinaryOp(left=left, op="&&", right=self._parse_expr(p))
+            return left
+
+        # ==, !=
+        for op in ("==", "!="):
+            parts = self._split_op(expr, op)
+            if len(parts) == 2:
+                return BinaryOp(
+                    left=self._parse_expr(parts[0]),
+                    op=op,
+                    right=self._parse_expr(parts[1]),
+                )
+
+        # <=, >=, <, > (ordre important : <= avant <)
+        for op in ("<=", ">=", "<", ">"):
+            parts = self._split_op(expr, op)
+            if len(parts) == 2:
+                return BinaryOp(
+                    left=self._parse_expr(parts[0]),
+                    op=op,
+                    right=self._parse_expr(parts[1]),
+                )
+
+        # + (concaténation / addition)
         parts = self._split_concat(expr)
         if len(parts) > 1:
             left = self._parse_expr(parts[0])
             for part in parts[1:]:
-                right = self._parse_expr(part)
-                left = BinaryOp(left=left, op="+", right=right)
+                left = BinaryOp(left=left, op="+", right=self._parse_expr(part))
             return left
+
+        # Unaire : !expr
+        if expr.startswith("!"):
+            return UnaryOp(op="!", operand=self._parse_expr(expr[1:]))
 
         # String literal
         if expr.startswith("'") and expr.endswith("'"):
@@ -222,6 +334,53 @@ class ApexParser:
 
         # Variable
         return Variable(name=expr)
+
+    def _matching_paren(self, s: str, start: int) -> int:
+        """Trouve la parenthèse fermante correspondante."""
+        depth = 0
+        for i in range(start, len(s)):
+            if s[i] == "(":
+                depth += 1
+            elif s[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        return -1
+
+    def _split_op(self, expr: str, op: str) -> list:
+        """Split par un opérateur en respectant parenthèses et strings."""
+        parts = []
+        current = ""
+        in_string = False
+        depth = 0
+        i = 0
+        while i < len(expr):
+            ch = expr[i]
+            if ch == "'" and depth == 0:
+                in_string = not in_string
+                current += ch
+            elif not in_string and ch == "(":
+                depth += 1
+                current += ch
+            elif not in_string and ch == ")":
+                depth -= 1
+                current += ch
+            elif (not in_string and depth == 0
+                  and expr[i:i + len(op)] == op
+                  # Éviter de matcher == quand on cherche = etc.
+                  and not (op == "=" and i + 1 < len(expr) and expr[i + 1] == "=")
+                  and not (op == "<" and i + 1 < len(expr) and expr[i + 1] == "=")
+                  and not (op == ">" and i + 1 < len(expr) and expr[i + 1] == "=")
+                  and not (op == "!" and i + 1 < len(expr) and expr[i + 1] == "=")):
+                parts.append(current)
+                current = ""
+                i += len(op)
+                continue
+            else:
+                current += ch
+            i += 1
+        parts.append(current)
+        return parts
 
     def _split_concat(self, expr: str) -> list:
         """Split une expression par + en respectant les strings."""

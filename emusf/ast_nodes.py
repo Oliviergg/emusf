@@ -53,6 +53,12 @@ class BinaryOp(Expr):
 
 
 @dataclass
+class UnaryOp(Expr):
+    op: str  # '!'
+    operand: Expr
+
+
+@dataclass
 class NewSObject(Expr):
     sobject_type: str
     fields: dict  # {field_name: Expr}
@@ -117,8 +123,15 @@ class SystemDebug(Stmt):
 class ForEach(Stmt):
     iter_type: str
     iter_var: str
-    list_var: str
+    list_expr: Expr  # Variable('accounts') ou FieldAccess('Trigger', 'new')
     body: list  # list[Stmt]
+
+
+@dataclass
+class IfElse(Stmt):
+    condition: Expr
+    then_body: list  # list[Stmt]
+    else_body: list  # list[Stmt] (peut être vide)
 
 
 @dataclass

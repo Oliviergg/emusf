@@ -13,6 +13,8 @@ class SOQLQuery:
     sobject: str
     where: Optional[str] = None
     subqueries: dict = field(default_factory=dict)
+    limit: Optional[int] = None
+    order_by: Optional[str] = None
 
 
 def extract_subqueries(select_clause: str) -> tuple:
@@ -88,8 +90,24 @@ def parse_soql(soql: str, context: Optional[dict] = None) -> SOQLQuery:
     from_match = re.match(r"(\w+)", after_from)
     sobject = from_match.group(1)
 
-    # WHERE (dans la partie après FROM <sobject>)
+    # Parse le reste : WHERE ... ORDER BY ... LIMIT ...
     remainder = after_from[from_match.end():].strip()
+
+    # Extraire LIMIT
+    limit_val = None
+    limit_match = re.search(r'\bLIMIT\s+(\d+)\s*$', remainder, re.IGNORECASE)
+    if limit_match:
+        limit_val = int(limit_match.group(1))
+        remainder = remainder[:limit_match.start()].strip()
+
+    # Extraire ORDER BY
+    order_by = None
+    order_match = re.search(r'\bORDER\s+BY\s+(.+)$', remainder, re.IGNORECASE)
+    if order_match:
+        order_by = order_match.group(1).strip()
+        remainder = remainder[:order_match.start()].strip()
+
+    # WHERE
     where_clause = None
     where_match = re.match(r"WHERE\s+(.+)$", remainder, re.IGNORECASE | re.DOTALL)
     if where_match:
@@ -107,4 +125,6 @@ def parse_soql(soql: str, context: Optional[dict] = None) -> SOQLQuery:
         sobject=sobject,
         where=where_clause,
         subqueries=subqueries,
+        limit=limit_val,
+        order_by=order_by,
     )

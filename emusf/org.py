@@ -228,6 +228,10 @@ class FakeOrg:
         sql = "SELECT {} FROM {}".format(fields, sobject_name)
         if query.where:
             sql += " WHERE {}".format(query.where)
+        if query.order_by:
+            sql += " ORDER BY {}".format(query.order_by)
+        if query.limit:
+            sql += " LIMIT {}".format(query.limit)
 
         cursor = self.conn.execute(sql)
         rows = [dict(row) for row in cursor.fetchall()]
