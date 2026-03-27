@@ -49,13 +49,18 @@ def extract_test_methods(source):
     lines = source.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped == "@isTest" or stripped == "@IsTest":
-            # La méthode suit sur les lignes suivantes
+        # @isTest annotation
+        if stripped.lower() in ("@istest", "@istest"):
             for j in range(i + 1, min(i + 5, len(lines))):
                 m = re.search(r'(?:static\s+)?void\s+(\w+)\s*\(', lines[j])
                 if m:
                     methods.append(m.group(1))
                     break
+        # testMethod keyword
+        elif "testMethod" in stripped or "testmethod" in stripped:
+            m = re.search(r'(?:testMethod|testmethod)\s+void\s+(\w+)\s*\(', stripped)
+            if m:
+                methods.append(m.group(1))
     return methods
 
 
@@ -173,6 +178,7 @@ if __name__ == "__main__":
         ("XPLUtilTest", ["XPLUtil"]),
         ("XPLAddressNormalizerTest", ["XPLAddressNormalizer"]),
         ("XPLDateParserTest", ["XPLDateParser"]),
+        ("FuzzyWuzzyTest", ["FuzzyWuzzy"]),
     ]
 
     grand_passed = 0

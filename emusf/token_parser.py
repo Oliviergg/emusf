@@ -7,6 +7,7 @@ from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
     MethodCall, ChainedCall, Ternary, NewList, NewMap, NewSet, NewMapInit,
+    ArrayAccess, NewArray, CastExpr,
 )
 
 
@@ -163,7 +164,7 @@ def _parse_postfix(stream: TokenStream) -> Expr:
             # Array access: expr[index]
             index = parse_expression(stream)
             stream.expect(TokenType.RBRACKET)
-            expr = MethodCall(obj="_indexer", method="get", args=[expr, index])
+            expr = ArrayAccess(array=expr, index=index)
         else:
             break
 
@@ -174,13 +175,22 @@ def _parse_primary(stream: TokenStream) -> Expr:
     """Parse expression primaire."""
     tok = stream.current()
 
-    # Parenthèses
+    # Parenthèses or cast
     if tok.type == TokenType.LPAREN:
         stream.advance()
-        # Check for type cast: (Type) expr
+        # Check for type cast: (Type) expr or (double) expr
         if stream.at(TokenType.IDENT) and stream.peek(1).type == TokenType.RPAREN:
-            # Could be cast — for now treat as grouped expression
-            pass
+            cast_type = stream.current().value
+            # Heuristic: if next-next is not an operator, it's a cast
+            saved = stream.pos
+            stream.advance()  # consume type name
+            stream.advance()  # consume )
+            if stream.at_any(TokenType.IDENT, TokenType.INTEGER, TokenType.DECIMAL,
+                             TokenType.LPAREN, TokenType.NOT, TokenType.MINUS, TokenType.NEW):
+                inner = _parse_unary(stream)
+                return CastExpr(target_type=cast_type, expr=inner)
+            # Not a cast — backtrack
+            stream.pos = saved
         expr = parse_expression(stream)
         stream.expect(TokenType.RPAREN)
         return expr
@@ -235,6 +245,12 @@ def _parse_new(stream: TokenStream) -> Expr:
     # List<T>, Set<T>, Map<K,V>
     if type_name in ("List", "Set", "Map") and stream.match(TokenType.LT):
         return _parse_new_collection(stream, type_name)
+
+    # new Type[size] — array allocation
+    if stream.match(TokenType.LBRACKET):
+        size = parse_expression(stream)
+        stream.expect(TokenType.RBRACKET)
+        return NewArray(element_type=type_name, size=size)
 
     # new SObject(field = val, ...) or new ClassName(args)
     if stream.match(TokenType.LPAREN):

@@ -8,10 +8,11 @@ from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
     MethodCall, ChainedCall, Ternary, NewList, NewMap, NewMapInit,
+    ArrayAccess, NewArray, CastExpr,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
-    WhileLoop, ThrowStmt,
+    WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
     MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
@@ -25,6 +26,14 @@ class ReturnException(Exception):
 
 class ApexException(Exception):
     """Exception Apex (throw new ...)."""
+    pass
+
+
+class BreakException(Exception):
+    pass
+
+
+class ContinueException(Exception):
     pass
 
 
@@ -93,9 +102,23 @@ class ApexInterpreter:
 
         elif isinstance(stmt, FieldSet):
             obj = self.variables.get(stmt.obj)
-            if not isinstance(obj, dict):
+            if isinstance(obj, list):
+                # Array index set: arr[i] = val
+                try:
+                    # field might be a variable name or expression
+                    idx = self.variables.get(stmt.field)
+                    if idx is None:
+                        idx = int(stmt.field)
+                    obj[int(idx)] = self._eval(stmt.value)
+                    return
+                except (ValueError, TypeError):
+                    pass
+            if isinstance(obj, dict):
+                obj[stmt.field] = self._eval(stmt.value)
+            elif obj is None:
+                raise Exception("'{}' is null".format(stmt.obj))
+            else:
                 raise Exception("'{}' n'est pas un SObject".format(stmt.obj))
-            obj[stmt.field] = self._eval(stmt.value)
 
         elif isinstance(stmt, SOQLAssign):
             results = self.org.execute_soql(stmt.soql, context=self.variables)
@@ -130,8 +153,13 @@ class ApexInterpreter:
                 items = []
             for item in items:
                 self.variables[stmt.iter_var] = item
-                for body_stmt in stmt.body:
-                    self._exec_stmt(body_stmt)
+                try:
+                    for body_stmt in stmt.body:
+                        self._exec_stmt(body_stmt)
+                except BreakException:
+                    break
+                except ContinueException:
+                    continue
 
         elif isinstance(stmt, Return):
             value = self._eval(stmt.value) if stmt.value else None
@@ -163,14 +191,50 @@ class ApexInterpreter:
                         break
 
         elif isinstance(stmt, WhileLoop):
-            max_iter = 10000
+            max_iter = 100000
             count = 0
             while self._is_truthy(self._eval(stmt.condition)):
-                for s in stmt.body:
-                    self._exec_stmt(s)
+                try:
+                    for s in stmt.body:
+                        self._exec_stmt(s)
+                except BreakException:
+                    break
+                except ContinueException:
+                    pass
                 count += 1
                 if count > max_iter:
-                    raise Exception("Boucle infinie détectée (>{} itérations)".format(max_iter))
+                    raise Exception("Boucle infinie détectée")
+
+        elif isinstance(stmt, DoWhile):
+            max_iter = 100000
+            count = 0
+            while True:
+                try:
+                    for s in stmt.body:
+                        self._exec_stmt(s)
+                except BreakException:
+                    break
+                except ContinueException:
+                    pass
+                count += 1
+                if count > max_iter:
+                    raise Exception("Boucle infinie détectée")
+                if not self._is_truthy(self._eval(stmt.condition)):
+                    break
+
+        elif isinstance(stmt, BreakStmt):
+            raise BreakException()
+
+        elif isinstance(stmt, ContinueStmt):
+            raise ContinueException()
+
+        elif isinstance(stmt, Increment):
+            val = self.variables.get(stmt.var_name, 0)
+            self.variables[stmt.var_name] = val + 1
+
+        elif isinstance(stmt, Decrement):
+            val = self.variables.get(stmt.var_name, 0)
+            self.variables[stmt.var_name] = val - 1
 
         elif isinstance(stmt, ThrowStmt):
             val = self._eval(stmt.expr)
@@ -340,6 +404,31 @@ class ApexInterpreter:
             args = [self._eval(a) for a in expr.args]
             return self._call_on_value(target, expr.method, args)
 
+        elif isinstance(expr, ArrayAccess):
+            arr = self._eval(expr.array)
+            idx = self._eval(expr.index)
+            if isinstance(arr, list) and isinstance(idx, (int, float)):
+                return arr[int(idx)]
+            if isinstance(arr, dict):
+                return arr.get(idx)
+            return None
+
+        elif isinstance(expr, NewArray):
+            size = self._eval(expr.size)
+            return [None] * int(size)
+
+        elif isinstance(expr, CastExpr):
+            val = self._eval(expr.expr)
+            if expr.target_type in ("Integer", "int"):
+                return int(val) if val is not None else 0
+            elif expr.target_type in ("Double", "double", "Decimal"):
+                return float(val) if val is not None else 0.0
+            elif expr.target_type == "String":
+                return str(val)
+            elif expr.target_type == "Boolean":
+                return bool(val)
+            return val  # passthrough pour les types inconnus
+
         elif isinstance(expr, MethodCall):
             return self._exec_method_call(expr)
 
@@ -358,44 +447,9 @@ class ApexInterpreter:
             if not (self._current_class and call.method in self._current_class.methods):
                 return None
 
-        # List methods
-        if isinstance(obj, list):
-            if method == "add":
-                obj.append(args[0] if args else None)
-                return None
-            elif method == "size":
-                return len(obj)
-            elif method == "isEmpty":
-                return len(obj) == 0
-            elif method == "get":
-                return obj[int(args[0])] if args else None
-            elif method == "contains":
-                return args[0] in obj if args else False
-            elif method == "remove":
-                idx = int(args[0])
-                return obj.pop(idx)
-            elif method == "clear":
-                obj.clear()
-                return None
-
-        # Set methods
-        elif isinstance(obj, set):
-            if method == "add":
-                obj.add(args[0] if args else None)
-                return None
-            elif method == "contains":
-                return args[0] in obj if args else False
-            elif method == "size":
-                return len(obj)
-            elif method == "isEmpty":
-                return len(obj) == 0
-            elif method == "remove":
-                obj.discard(args[0] if args else None)
-                return None
-            elif method == "addAll":
-                if args and hasattr(args[0], '__iter__'):
-                    obj.update(args[0])
-                return None
+        # List and Set methods → delegate to _call_on_value
+        if isinstance(obj, (list, set)):
+            return self._call_on_value(obj, method, args)
 
         # Special typed objects (Pattern, Matcher, Date, etc.)
         elif isinstance(obj, dict) and obj.get("_type") in ("Pattern", "Matcher", "Date", "DateTime"):
@@ -475,6 +529,23 @@ class ApexInterpreter:
                 import re as _re
                 return {"_type": "Pattern", "_compiled": _re.compile(regex_str), "_pattern": regex_str}
 
+        # Math static methods
+        if call.obj == "Math":
+            if method == "round":
+                return round(args[0]) if args else 0
+            elif method == "abs":
+                return abs(args[0]) if args else 0
+            elif method == "max":
+                return max(args[0], args[1]) if len(args) >= 2 else (args[0] if args else 0)
+            elif method == "min":
+                return min(args[0], args[1]) if len(args) >= 2 else (args[0] if args else 0)
+            elif method == "floor":
+                import math
+                return int(math.floor(args[0])) if args else 0
+            elif method == "ceil":
+                import math
+                return int(math.ceil(args[0])) if args else 0
+
         # Date static methods
         if call.obj == "Date":
             if method == "newInstance":
@@ -519,13 +590,16 @@ class ApexInterpreter:
             "substring": lambda: s[int(args[0]):int(args[1])] if len(args) >= 2 else s[int(args[0]):],
             "indexOf": lambda: s.find(args[0]) if args else -1,
             "replace": lambda: s.replace(args[0], args[1]) if len(args) >= 2 else s,
-            "split": lambda: __import__('re').split(args[0], s) if args else [s],
+            "split": lambda: list(s) if args and args[0] == '' else (__import__('re').split(args[0], s) if args else [s]),
             "left": lambda: s[:int(args[0])] if args else s,
             "right": lambda: s[-int(args[0]):] if args else s,
             "removeStart": lambda: s[len(args[0]):] if args and s.startswith(args[0]) else s,
             "removeEnd": lambda: s[:-len(args[0])] if args and s.endswith(args[0]) else s,
             "leftPad": lambda: s.rjust(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
             "replaceAll": lambda: __import__('re').sub(args[0], args[1], s) if len(args) >= 2 else s,
+            "equals": lambda: s == args[0] if args else False,
+            "equalsIgnoreCase": lambda: s.lower() == args[0].lower() if args and isinstance(args[0], str) else False,
+            "charAt": lambda: s[int(args[0])] if args else '',
         }
         if method in methods:
             return methods[method]()
@@ -541,6 +615,8 @@ class ApexInterpreter:
             "contains": lambda: args[0] in lst if args else False,
             "remove": lambda: lst.pop(int(args[0])),
             "clear": lambda: lst.clear(),
+            "sort": lambda: lst.sort(),
+            "addAll": lambda: lst.extend(args[0]) if args else None,
         }
         if method in methods:
             return methods[method]()
@@ -623,27 +699,31 @@ class ApexInterpreter:
         raise Exception("Map.{}() non supporté".format(method))
 
     def _invoke_method(self, class_def, method_def, args):
-        """Invoque une méthode avec des arguments, retourne la valeur de retour."""
+        """Invoque une méthode avec un scope isolé (stack de variables)."""
         saved_class = self._current_class
+        saved_vars = self.variables.copy()
         self._current_class = class_def
 
-        # Sauvegarder les variables qui vont être écrasées par les params
-        param_names = [pname for _, pname in method_def.params]
-        saved_params = {p: self.variables.get(p) for p in param_names if p in self.variables}
+        # Nouveau scope : on garde les constantes de classe et les classes
+        new_scope = {}
 
-        # Variables locales ajoutées pendant l'exécution (à nettoyer après)
-        vars_before = set(self.variables.keys())
+        # Copier les constantes de toutes les classes chargées
+        for k, v in saved_vars.items():
+            if "." in k:  # ClassName.CONST
+                new_scope[k] = v
+
+        # Injecter les constantes de la classe courante (nom court)
+        for name, (type_name, expr) in class_def.constants.items():
+            key = "{}.{}".format(class_def.name, name)
+            if key not in new_scope:
+                new_scope[key] = self._eval(expr)
+            new_scope[name] = new_scope[key]
 
         # Injecter les paramètres
         for i, (ptype, pname) in enumerate(method_def.params):
-            self.variables[pname] = args[i] if i < len(args) else None
+            new_scope[pname] = args[i] if i < len(args) else None
 
-        # Injecter les constantes de la classe (sans préfixe pour accès interne)
-        for name, (type_name, expr) in class_def.constants.items():
-            key = "{}.{}".format(class_def.name, name)
-            if key not in self.variables:
-                self.variables[key] = self._eval(expr)
-            self.variables[name] = self.variables[key]
+        self.variables = new_scope
 
         result = None
         try:
@@ -652,21 +732,8 @@ class ApexInterpreter:
         except ReturnException as ret:
             result = ret.value
 
-        # Nettoyer : supprimer les variables locales créées pendant l'exécution
-        # Mais préserver les constantes de la classe parente si on est en appel imbriqué
-        const_names = set(class_def.constants.keys()) if class_def else set()
-        vars_after = set(self.variables.keys())
-        for v in vars_after - vars_before:
-            if not v.startswith(class_def.name + ".") and v not in const_names:
-                del self.variables[v]
-
-        # Restaurer les params écrasés
-        for p, val in saved_params.items():
-            self.variables[p] = val
-        for p in param_names:
-            if p not in saved_params and p in self.variables:
-                del self.variables[p]
-
+        # Restaurer le scope précédent
+        self.variables = saved_vars
         self._current_class = saved_class
         return result
 

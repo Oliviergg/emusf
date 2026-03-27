@@ -220,6 +220,55 @@ class WhileLoop(Stmt):
 
 
 @dataclass
+class DoWhile(Stmt):
+    condition: Expr
+    body: list  # list[Stmt]
+
+
+@dataclass
+class BreakStmt(Stmt):
+    pass
+
+
+@dataclass
+class ContinueStmt(Stmt):
+    pass
+
+
+@dataclass
+class Increment(Stmt):
+    """var++ or ++var"""
+    var_name: str
+
+
+@dataclass
+class Decrement(Stmt):
+    """var-- or --var"""
+    var_name: str
+
+
+@dataclass
+class ArrayAccess(Expr):
+    """arr[index]"""
+    array: Expr
+    index: Expr
+
+
+@dataclass
+class NewArray(Expr):
+    """new Type[size]"""
+    element_type: str
+    size: Expr
+
+
+@dataclass
+class CastExpr(Expr):
+    """(Type) expr"""
+    target_type: str
+    expr: Expr
+
+
+@dataclass
 class ThrowStmt(Stmt):
     expr: Expr
 

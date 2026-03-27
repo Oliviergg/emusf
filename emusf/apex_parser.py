@@ -15,7 +15,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
-    WhileLoop, ThrowStmt,
+    WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
     MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
@@ -301,6 +301,13 @@ class ApexParser:
         if if_match:
             return self._parse_if(stmt)
 
+        # --- do { body } while (cond); ---
+        do_match = re.match(r'do\s*\{(.*)\}\s*while\s*\((.+?)\)\s*;?$', stmt, re.DOTALL)
+        if do_match:
+            body = self._parse_block(do_match.group(1))
+            cond = self._parse_expr(do_match.group(2))
+            return DoWhile(condition=cond, body=body)
+
         # --- while (cond) { body } ---
         while_match = re.match(r'while\s*\((.+?)\)\s*\{(.*)\}', stmt, re.DOTALL)
         if while_match:
@@ -322,6 +329,29 @@ class ApexParser:
         try_match = re.match(r'try\s*\{', stmt)
         if try_match:
             return self._parse_try_catch(stmt)
+
+        # --- break; ---
+        if stmt.rstrip(";").strip() == "break":
+            return BreakStmt()
+
+        # --- continue; ---
+        if stmt.rstrip(";").strip() == "continue":
+            return ContinueStmt()
+
+        # --- var++ / var-- ---
+        inc_match = re.match(r'(\w+)\+\+\s*;?$', stmt)
+        if inc_match:
+            return Increment(var_name=inc_match.group(1))
+        dec_match = re.match(r'(\w+)--\s*;?$', stmt)
+        if dec_match:
+            return Decrement(var_name=dec_match.group(1))
+        # ++var / --var
+        inc_match2 = re.match(r'\+\+(\w+)\s*;?$', stmt)
+        if inc_match2:
+            return Increment(var_name=inc_match2.group(1))
+        dec_match2 = re.match(r'--(\w+)\s*;?$', stmt)
+        if dec_match2:
+            return Decrement(var_name=dec_match2.group(1))
 
         # --- return expr; ---
         return_match = re.match(r'return\b\s*(.*?)\s*;?$', stmt)
@@ -350,6 +380,19 @@ class ApexParser:
         delete_match = re.match(r'delete\s+(\w+)\s*;?$', stmt)
         if delete_match:
             return DmlDelete(var_name=delete_match.group(1))
+
+        # --- arr[index] = expr; ---
+        arr_assign_match = re.match(r'(\w+)\[(.+?)\]\s*=\s*(.+?)\s*;?$', stmt)
+        if arr_assign_match:
+            arr_name = arr_assign_match.group(1)
+            # Encode as FieldSet with index as field (handled by interpreter)
+            index_str = arr_assign_match.group(2)
+            value_str = arr_assign_match.group(3)
+            return FieldSet(
+                obj=arr_name,
+                field=index_str,  # Will be resolved as index in interpreter
+                value=self._parse_expr(value_str),
+            )
 
         # --- obj.method(args); (statement, pas assignment) ---
         method_stmt_match = re.match(r'(\w+)\.(\w+)\((.*)?\)\s*;?$', stmt, re.DOTALL)
@@ -464,8 +507,8 @@ class ApexParser:
                 ),
             )
 
-        # --- Type var = expr; --- (supports Map<String, String>, List<Account>, etc.)
-        decl_match = re.match(r'(\w+(?:<[\w,\s]+>)?)\s+(\w+)\s*=\s*(.+?)\s*;?$', stmt)
+        # --- Type var = expr; --- (supports Map<String, String>, List<Account>, String[], etc.)
+        decl_match = re.match(r'(\w+(?:<[\w,\s]+>)?(?:\[\])?)\s+(\w+)\s*=\s*(.+?)\s*;?$', stmt)
         if decl_match:
             return VarDecl(
                 type_name=decl_match.group(1),
