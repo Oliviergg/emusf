@@ -86,6 +86,13 @@ class NewMap(Expr):
     value_type: str
 
 
+@dataclass
+class NewSet(Expr):
+    """new Set<T>()"""
+    element_type: str
+    init_values: list  # list[Expr]
+
+
 # --- Statements ---
 
 @dataclass
@@ -173,6 +180,13 @@ class TryCatch(Stmt):
     catch_type: str  # ex: 'Exception'
     catch_var: str  # ex: 'e'
     catch_body: list  # list[Stmt]
+
+
+@dataclass
+class SwitchWhen(Stmt):
+    """switch on expr { when 'val' { ... } when else { ... } }"""
+    expr: Expr
+    cases: list  # list[(list[Expr]|None, list[Stmt])]  None = else
 
 
 @dataclass

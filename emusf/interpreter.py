@@ -11,7 +11,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
-    MethodDef, ClassDef,
+    MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
 
@@ -133,6 +133,28 @@ class ApexInterpreter:
 
         elif isinstance(stmt, MethodCallStmt):
             self._eval(stmt.call)
+
+        elif isinstance(stmt, SwitchWhen):
+            val = self._eval(stmt.expr)
+            matched = False
+            for case_values, case_body in stmt.cases:
+                if case_values is None:
+                    continue  # else — handled below
+                for cv in case_values:
+                    if self._eval(cv) == val:
+                        matched = True
+                        break
+                if matched:
+                    for s in case_body:
+                        self._exec_stmt(s)
+                    break
+            if not matched:
+                # Execute else clause if present
+                for case_values, case_body in stmt.cases:
+                    if case_values is None:
+                        for s in case_body:
+                            self._exec_stmt(s)
+                        break
 
         elif isinstance(stmt, TryCatch):
             try:
@@ -268,6 +290,9 @@ class ApexInterpreter:
         elif isinstance(expr, NewMap):
             return {}
 
+        elif isinstance(expr, NewSet):
+            return set(self._eval(v) for v in expr.init_values)
+
         elif isinstance(expr, MethodCall):
             return self._exec_method_call(expr)
 
@@ -298,6 +323,25 @@ class ApexInterpreter:
                 return obj.pop(idx)
             elif method == "clear":
                 obj.clear()
+                return None
+
+        # Set methods
+        elif isinstance(obj, set):
+            if method == "add":
+                obj.add(args[0] if args else None)
+                return None
+            elif method == "contains":
+                return args[0] in obj if args else False
+            elif method == "size":
+                return len(obj)
+            elif method == "isEmpty":
+                return len(obj) == 0
+            elif method == "remove":
+                obj.discard(args[0] if args else None)
+                return None
+            elif method == "addAll":
+                if args and hasattr(args[0], '__iter__'):
+                    obj.update(args[0])
                 return None
 
         # Map methods

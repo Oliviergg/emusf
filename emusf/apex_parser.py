@@ -12,7 +12,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
-    MethodDef, ClassDef,
+    MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
 
@@ -254,6 +254,11 @@ class ApexParser:
         if if_match:
             return self._parse_if(stmt)
 
+        # --- switch on expr { when ... } ---
+        switch_match = re.match(r'switch\s+on\s+(.+?)\s*\{', stmt)
+        if switch_match:
+            return self._parse_switch(stmt, switch_match)
+
         # --- try { ... } catch (Type var) { ... } ---
         try_match = re.match(r'try\s*\{', stmt)
         if try_match:
@@ -329,11 +334,29 @@ class ApexParser:
             init_str = new_list_match.group(4)
             init_values = []
             if init_str and init_str.strip():
-                init_values = [self._parse_expr(a) for a in self._parse_call_args(init_str)]
+                init_values = self._parse_call_args(init_str)
             return VarDecl(
                 type_name="List<{}>".format(elem_type),
                 var_name=var_name,
                 value=NewList(element_type=elem_type, init_values=init_values),
+            )
+
+        # --- Set<T> var = new Set<T>(); or Set<T> var = new Set<T>{...}; ---
+        new_set_match = re.match(
+            r'(?:Set<(\w+)>\s+)?(\w+)\s*=\s*new\s+Set<(\w+)>\s*(?:\(\s*\)|\{(.*?)\})\s*;?$',
+            stmt, re.DOTALL
+        )
+        if new_set_match:
+            elem_type = new_set_match.group(1) or new_set_match.group(3)
+            var_name = new_set_match.group(2)
+            init_str = new_set_match.group(4)
+            init_values = []
+            if init_str and init_str.strip():
+                init_values = self._parse_call_args(init_str)
+            return VarDecl(
+                type_name="Set<{}>".format(elem_type),
+                var_name=var_name,
+                value=NewSet(element_type=elem_type, init_values=init_values),
             )
 
         # --- Map<K,V> var = new Map<K,V>(); ---
@@ -493,6 +516,58 @@ class ApexParser:
             catch_var=catch_var,
             catch_body=catch_body,
         )
+
+    def _parse_switch(self, stmt: str, match) -> SwitchWhen:
+        """Parse switch on expr { when 'a' { ... } when else { ... } }"""
+        expr = self._parse_expr(match.group(1))
+
+        # Trouver le body principal
+        body_start = match.end()
+        depth = 1
+        i = body_start
+        while i < len(stmt) and depth > 0:
+            if stmt[i] == "{":
+                depth += 1
+            elif stmt[i] == "}":
+                depth -= 1
+            i += 1
+        switch_body = stmt[body_start:i - 1]
+
+        # Parser les when clauses
+        cases = []
+        when_pattern = re.compile(r'when\s+(else|.+?)\s*\{', re.DOTALL)
+        pos = 0
+        while pos < len(switch_body):
+            m = when_pattern.search(switch_body, pos)
+            if not m:
+                break
+            label_str = m.group(1).strip()
+
+            # Extraire le body du when
+            when_start = m.end()
+            depth = 1
+            j = when_start
+            while j < len(switch_body) and depth > 0:
+                if switch_body[j] == "{":
+                    depth += 1
+                elif switch_body[j] == "}":
+                    depth -= 1
+                j += 1
+            when_body = self._parse_block(switch_body[when_start:j - 1])
+
+            if label_str == "else":
+                cases.append((None, when_body))
+            else:
+                # Parser les valeurs (peut être: 'a', 'b' séparés par virgule)
+                values = []
+                for v in self._split_args_str(label_str):
+                    v = v.strip()
+                    values.append(self._parse_expr(v))
+                cases.append((values, when_body))
+
+            pos = j
+
+        return SwitchWhen(expr=expr, cases=cases)
 
     def _parse_call_args(self, args_str: str) -> list:
         """Parse les arguments d'un appel de méthode en list[Expr]."""
