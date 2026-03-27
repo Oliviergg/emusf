@@ -53,6 +53,7 @@ class TokenType(Enum):
     QUESTION = auto()     # ?
     COLON = auto()        # :
     NULLCOAL = auto()     # ??
+    ARROW = auto()        # =>
 
     # Delimiters
     LPAREN = auto()       # (
@@ -158,6 +159,10 @@ class Lexer:
 
             # Two-char operators (must check before single-char)
             two = self.source[self.pos:self.pos + 2]
+            if two == "=>":
+                self.tokens.append(Token(TokenType.ARROW, "=>", self.line, self.col))
+                self._advance(2)
+                continue
             if two == "==":
                 self.tokens.append(Token(TokenType.EQ, "==", self.line, self.col))
                 self._advance(2)

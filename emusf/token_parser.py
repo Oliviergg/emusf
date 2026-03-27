@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from .lexer import Token, TokenType
+from .lexer import Token, TokenType, LexerError
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
-    MethodCall, ChainedCall, Ternary, NewList, NewMap, NewSet,
+    MethodCall, ChainedCall, Ternary, NewList, NewMap, NewSet, NewMapInit,
 )
 
 
@@ -261,8 +261,12 @@ def _parse_new_collection(stream: TokenStream, collection_type: str) -> Expr:
 
     if collection_type == "Map":
         stream.expect(TokenType.COMMA)
+        # Value type might be generic like List<String>
         val_type = stream.expect(TokenType.IDENT).value
         stream.expect(TokenType.GT)
+        if stream.match(TokenType.LBRACE):
+            # Map init: { 'key' => value, ... }
+            return _parse_map_init(stream, elem_type, val_type)
         stream.expect(TokenType.LPAREN)
         stream.expect(TokenType.RPAREN)
         return NewMap(key_type=elem_type, value_type=val_type)
@@ -298,6 +302,25 @@ def _parse_constructor_fields(stream: TokenStream) -> dict:
             break
     stream.expect(TokenType.RPAREN)
     return fields
+
+
+def _parse_map_init(stream: TokenStream, key_type: str, val_type: str) -> NewMapInit:
+    """Parse Map init: { 'key' => value, ... } — opening { already consumed."""
+    entries = []
+    if not stream.at(TokenType.RBRACE):
+        key = parse_expression(stream)
+        stream.expect(TokenType.ARROW)
+        val = parse_expression(stream)
+        entries.append((key, val))
+        while stream.match(TokenType.COMMA):
+            if stream.at(TokenType.RBRACE):
+                break
+            key = parse_expression(stream)
+            stream.expect(TokenType.ARROW)
+            val = parse_expression(stream)
+            entries.append((key, val))
+    stream.expect(TokenType.RBRACE)
+    return NewMapInit(key_type=key_type, value_type=val_type, entries=entries)
 
 
 def _parse_args(stream: TokenStream) -> list:

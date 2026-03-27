@@ -7,7 +7,7 @@ from .apex_parser import ApexParser
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
-    MethodCall, ChainedCall, Ternary, NewList, NewMap,
+    MethodCall, ChainedCall, Ternary, NewList, NewMap, NewMapInit,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
@@ -323,6 +323,9 @@ class ApexInterpreter:
         elif isinstance(expr, NewMap):
             return {}
 
+        elif isinstance(expr, NewMapInit):
+            return {self._eval(k): self._eval(v) for k, v in expr.entries}
+
         elif isinstance(expr, NewSet):
             return set(self._eval(v) for v in expr.init_values)
 
@@ -350,8 +353,10 @@ class ApexInterpreter:
         method = call.method
 
         # Null-safe: appeler une méthode sur null retourne null
-        if obj is None and call.obj not in self.classes and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime"):
-            return None
+        if obj is None and call.obj not in self.classes and call.obj != "_self" and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime"):
+            # Vérifier aussi si c'est une méthode de la classe courante
+            if not (self._current_class and call.method in self._current_class.methods):
+                return None
 
         # List methods
         if isinstance(obj, list):
@@ -427,7 +432,9 @@ class ApexInterpreter:
         if call.obj in self.classes:
             return self.call_method(call.obj, method, args)
 
-        # Appel de méthode de la même classe (sans préfixe)
+        # Appel de méthode locale (_self) ou de la même classe (sans préfixe)
+        if call.obj == "_self" and self._current_class and method in self._current_class.methods:
+            return self._invoke_method(self._current_class, self._current_class.methods[method], args)
         if self._current_class and method in self._current_class.methods:
             return self._invoke_method(self._current_class, self._current_class.methods[method], args)
 
@@ -562,21 +569,25 @@ class ApexInterpreter:
 
     def _invoke_method(self, class_def, method_def, args):
         """Invoque une méthode avec des arguments, retourne la valeur de retour."""
-        # Sauvegarder les variables actuelles
-        saved_vars = dict(self.variables)
         saved_class = self._current_class
         self._current_class = class_def
+
+        # Sauvegarder les variables qui vont être écrasées par les params
+        param_names = [pname for _, pname in method_def.params]
+        saved_params = {p: self.variables.get(p) for p in param_names if p in self.variables}
+
+        # Variables locales ajoutées pendant l'exécution (à nettoyer après)
+        vars_before = set(self.variables.keys())
 
         # Injecter les paramètres
         for i, (ptype, pname) in enumerate(method_def.params):
             self.variables[pname] = args[i] if i < len(args) else None
 
-        # Injecter les constantes de la classe
+        # Injecter les constantes de la classe (sans préfixe pour accès interne)
         for name, (type_name, expr) in class_def.constants.items():
             key = "{}.{}".format(class_def.name, name)
             if key not in self.variables:
                 self.variables[key] = self._eval(expr)
-            # Aussi accessible sans préfixe dans la classe
             self.variables[name] = self.variables[key]
 
         result = None
@@ -586,10 +597,22 @@ class ApexInterpreter:
         except ReturnException as ret:
             result = ret.value
 
-        # Restaurer les variables (garder les changements sur les objets partagés)
-        self._current_class = saved_class
-        self.variables = saved_vars
+        # Nettoyer : supprimer les variables locales créées pendant l'exécution
+        # Mais préserver les constantes de la classe parente si on est en appel imbriqué
+        const_names = set(class_def.constants.keys()) if class_def else set()
+        vars_after = set(self.variables.keys())
+        for v in vars_after - vars_before:
+            if not v.startswith(class_def.name + ".") and v not in const_names:
+                del self.variables[v]
 
+        # Restaurer les params écrasés
+        for p, val in saved_params.items():
+            self.variables[p] = val
+        for p in param_names:
+            if p not in saved_params and p in self.variables:
+                del self.variables[p]
+
+        self._current_class = saved_class
         return result
 
     def _is_truthy(self, val) -> bool:

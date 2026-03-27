@@ -109,6 +109,14 @@ class NewSet(Expr):
     init_values: list  # list[Expr]
 
 
+@dataclass
+class NewMapInit(Expr):
+    """new Map<K,V>{'key' => val, ...}"""
+    key_type: str
+    value_type: str
+    entries: list  # list[(Expr, Expr)]
+
+
 # --- Statements ---
 
 @dataclass

@@ -136,29 +136,63 @@ class ApexParser:
             method_positions.append((m.start(), j))
 
         # Trouver les constantes (lignes hors des méthodes)
-        const_pattern = re.compile(
-            r'(?:public|private|protected)?\s*'
+        # Pattern: [modifiers] Type name = value;
+        # Le `value` peut contenir des {} (Set/Map init), donc on ne peut pas juste regex
+        const_header = re.compile(
+            r'(?:public|private|protected|global)\s+'
             r'(?:static\s+)?(?:final\s+)?'
-            r'(\w+(?:<[\w,\s]+>)?)\s+'
-            r'(\w+)\s*=\s*(.+?)\s*;',
-            re.DOTALL
+            r'([\w<>,\s]+?)\s+'
+            r'(\w+)\s*=\s*',
         )
-        for m in const_pattern.finditer(body):
+        for m in const_header.finditer(body):
             # Vérifier qu'on n'est pas dans une méthode
             in_method = False
             for mstart, mend in method_positions:
                 if mstart <= m.start() <= mend:
                     in_method = True
                     break
-            if not in_method:
-                type_name = m.group(1)
-                var_name = m.group(2)
-                value_str = m.group(3).strip()
-                try:
-                    value_expr = self._parse_expr(value_str)
-                    constants[var_name] = (type_name, value_expr)
-                except Exception:
-                    pass
+            if in_method:
+                continue
+
+            type_name = m.group(1).strip()
+            var_name = m.group(2)
+
+            # Trouver la fin de la valeur (le ; en respectant {} et strings)
+            val_start = m.end()
+            value_str = self._extract_until_semi(body, val_start)
+            if value_str is None:
+                continue
+
+            try:
+                value_expr = self._parse_expr(value_str)
+                constants[var_name] = (type_name, value_expr)
+            except Exception:
+                pass
+
+    def _extract_until_semi(self, source: str, start: int) -> Optional[str]:
+        """Extrait le texte de start jusqu'au ; en respectant {}, () et strings."""
+        depth = 0
+        in_string = False
+        i = start
+        while i < len(source):
+            ch = source[i]
+            if in_string:
+                if ch == "\\" and i + 1 < len(source) and source[i + 1] == "'":
+                    i += 2
+                    continue
+                if ch == "'":
+                    in_string = False
+            else:
+                if ch == "'":
+                    in_string = True
+                elif ch in ("(", "{", "["):
+                    depth += 1
+                elif ch in (")", "}", "]"):
+                    depth -= 1
+                elif ch == ";" and depth == 0:
+                    return source[start:i].strip()
+            i += 1
+        return None
 
     def _extract_method(self, source: str, method_name: str) -> Optional[str]:
         # Supporte les méthodes avec ou sans paramètres, avec ou sans access modifier
