@@ -12,7 +12,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
-    WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
+    ForCStyle, WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
     MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
@@ -190,6 +190,25 @@ class ApexInterpreter:
                             self._exec_stmt(s)
                         break
 
+        elif isinstance(stmt, ForCStyle):
+            if stmt.init:
+                self._exec_stmt(stmt.init)
+            max_iter = 100000
+            count = 0
+            while self._is_truthy(self._eval(stmt.condition)):
+                try:
+                    for s in stmt.body:
+                        self._exec_stmt(s)
+                except BreakException:
+                    break
+                except ContinueException:
+                    pass
+                if stmt.update:
+                    self._exec_stmt(stmt.update)
+                count += 1
+                if count > max_iter:
+                    raise Exception("Boucle infinie détectée")
+
         elif isinstance(stmt, WhileLoop):
             max_iter = 100000
             count = 0
@@ -268,6 +287,21 @@ class ApexInterpreter:
         record = self.variables.get(stmt.var_name)
         if record is None:
             raise Exception("Variable '{}' non définie".format(stmt.var_name))
+
+        # Bulk insert: if record is a list, insert all
+        if isinstance(record, list):
+            if not record:
+                return
+            sobject = record[0].get("_sobject_type") if isinstance(record[0], dict) else None
+            if not sobject:
+                raise Exception("Records sans type SObject")
+            data_list = [{k: v for k, v in r.items() if k != "_sobject_type"} for r in record]
+            result = self.org.insert(sobject, data_list)
+            for i, r in enumerate(record):
+                r["Id"] = result.record_ids[i]
+            print("DML: INSERT {} x{} -> Ids={}".format(sobject, len(record), result.record_ids[:3]))
+            return
+
         sobject = record.get("_sobject_type")
         if not sobject:
             raise Exception("Record sans type SObject")
@@ -280,6 +314,18 @@ class ApexInterpreter:
         record = self.variables.get(stmt.var_name)
         if record is None:
             raise Exception("Variable '{}' non définie".format(stmt.var_name))
+
+        if isinstance(record, list):
+            if not record:
+                return
+            sobject = record[0].get("_sobject_type") if isinstance(record[0], dict) else None
+            if not sobject:
+                return
+            data_list = [{k: v for k, v in r.items() if k != "_sobject_type"} for r in record]
+            self.org.update(sobject, data_list)
+            print("DML: UPDATE {} x{}".format(sobject, len(record)))
+            return
+
         sobject = record.get("_sobject_type")
         if not sobject:
             raise Exception("Record sans type SObject")
@@ -293,6 +339,17 @@ class ApexInterpreter:
         record = self.variables.get(stmt.var_name)
         if record is None:
             raise Exception("Variable '{}' non définie".format(stmt.var_name))
+
+        if isinstance(record, list):
+            if not record:
+                return
+            sobject = record[0].get("_sobject_type") if isinstance(record[0], dict) else None
+            ids = [r.get("Id", r.get("id")) for r in record if isinstance(r, dict)]
+            if sobject and ids:
+                self.org.delete(sobject, ids)
+                print("DML: DELETE {} x{}".format(sobject, len(ids)))
+            return
+
         sobject = record.get("_sobject_type")
         record_id = record.get("Id")
         if not record_id:
@@ -807,6 +864,20 @@ class ApexInterpreter:
                 return m.get("month")
             if method == "day":
                 return m.get("day")
+            if method == "addDays":
+                import datetime
+                d = datetime.date(m["year"], m["month"], m["day"])
+                d2 = d + datetime.timedelta(days=int(args[0]) if args else 0)
+                return {"_type": "Date", "year": d2.year, "month": d2.month, "day": d2.day}
+            if method == "addMonths":
+                month = m["month"] + (int(args[0]) if args else 0)
+                year = m["year"] + (month - 1) // 12
+                month = (month - 1) % 12 + 1
+                return {"_type": "Date", "year": year, "month": month, "day": m["day"]}
+            if method == "date":
+                return m  # Already a Date
+            if method == "format":
+                return "{}-{:02d}-{:02d}".format(m["year"], m["month"], m["day"])
 
         if "_sobject_type" in m:
             val = m.get(method)

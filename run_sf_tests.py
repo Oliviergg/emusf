@@ -43,10 +43,19 @@ def load_class_source(class_name):
 
 def extract_test_methods(source):
     methods = []
+    setup_method = None
     lines = source.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.lower() in ("@istest", "@istest"):
+        # @testSetup
+        if stripped.lower() == "@testsetup":
+            for j in range(i + 1, min(i + 5, len(lines))):
+                m = re.search(r'(?:static\s+)?void\s+(\w+)\s*\(', lines[j])
+                if m:
+                    setup_method = m.group(1)
+                    break
+        # @isTest
+        elif stripped.lower() in ("@istest", "@istest"):
             for j in range(i + 1, min(i + 5, len(lines))):
                 m = re.search(r'(?:static\s+)?void\s+(\w+)\s*\(', lines[j])
                 if m:
@@ -56,7 +65,7 @@ def extract_test_methods(source):
             m = re.search(r'(?:testMethod|testmethod)\s+void\s+(\w+)\s*\(', stripped)
             if m:
                 methods.append(m.group(1))
-    return methods
+    return methods, setup_method
 
 
 def load_all_source_classes(prefixes):
@@ -86,7 +95,7 @@ def run_test_class(test_class_name, all_classes, parser):
     if test_source is None:
         return {}
 
-    test_methods = extract_test_methods(test_source)
+    test_methods, setup_method = extract_test_methods(test_source)
     if not test_methods:
         return {}
 
@@ -113,6 +122,14 @@ def run_test_class(test_class_name, all_classes, parser):
                     pass
 
         try:
+            # Run @testSetup first if present
+            if setup_method:
+                try:
+                    setup_ast = parser.parse_class(test_source, setup_method)
+                    interp._exec_block(setup_ast)
+                except Exception:
+                    pass  # Setup failure shouldn't block the test
+
             ast = parser.parse_class(test_source, method_name)
             interp._exec_block(ast)
             results[method_name] = {

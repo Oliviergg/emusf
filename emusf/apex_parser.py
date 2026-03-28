@@ -15,7 +15,7 @@ from .ast_nodes import (
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
-    WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
+    ForCStyle, WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
     MethodDef, ClassDef, NewSet, SwitchWhen,
 )
 
@@ -281,20 +281,10 @@ class ApexParser:
     def _parse_statement(self, stmt: str) -> Optional[Stmt]:
         """Parse un statement brut en nœud AST."""
 
-        # --- for (Type var : expr) { body } ---
-        for_match = re.match(
-            r'for\s*\(\s*(\w+)\s+(\w+)\s*:\s*(.+?)\s*\)\s*\{(.*)\}',
-            stmt, re.DOTALL
-        )
-        if for_match:
-            body_stmts = self._parse_block(for_match.group(4))
-            list_expr = self._parse_expr(for_match.group(3))
-            return ForEach(
-                iter_type=for_match.group(1),
-                iter_var=for_match.group(2),
-                list_expr=list_expr,
-                body=body_stmts,
-            )
+        # --- for (...) { body } ---
+        for_start = re.match(r'for\s*\(', stmt)
+        if for_start:
+            return self._parse_for(stmt)
 
         # --- if (...) { ... } else if (...) { ... } else { ... } ---
         if_match = re.match(r'if\s*\((.+?)\)\s*\{', stmt)
@@ -413,10 +403,10 @@ class ApexParser:
                 value=self._parse_expr(field_set_match.group(3)),
             )
 
-        # --- List<SObject> var = [SOQL]; ---
+        # --- List<SObject> var = [SOQL]; --- (only if content starts with SELECT)
         soql_match = re.match(
-            r'(?:List<(\w+)>\s+)?(\w+)\s*=\s*\[(.+?)\]\s*;?$',
-            stmt, re.DOTALL
+            r'(?:List<(\w+)>\s+)?(\w+)\s*=\s*\[(\s*SELECT.+?)\]\s*;?$',
+            stmt, re.DOTALL | re.IGNORECASE
         )
         if soql_match:
             return SOQLAssign(
@@ -525,6 +515,106 @@ class ApexParser:
             )
 
         return None
+
+    def _parse_for(self, stmt: str):
+        """Parse for-each ou for C-style."""
+        # Extraire le contenu entre les parenthèses du for(...)
+        paren_start = stmt.index("(")
+        depth = 1
+        i = paren_start + 1
+        while i < len(stmt) and depth > 0:
+            if stmt[i] == "(":
+                depth += 1
+            elif stmt[i] == ")":
+                depth -= 1
+            i += 1
+        header = stmt[paren_start + 1:i - 1].strip()
+        rest = stmt[i:].strip()
+
+        # Extraire le body { ... }
+        if rest.startswith("{"):
+            body_start = 1
+            depth = 1
+            j = body_start
+            while j < len(rest) and depth > 0:
+                if rest[j] == "{":
+                    depth += 1
+                elif rest[j] == "}":
+                    depth -= 1
+                j += 1
+            body_str = rest[body_start:j - 1]
+        else:
+            body_str = rest
+
+        body_stmts = self._parse_block(body_str)
+
+        # Déterminer : for-each (contient ":") ou C-style (contient ";")
+        if ":" in header and ";" not in header:
+            # for (Type var : expr)
+            colon_pos = header.index(":")
+            left = header[:colon_pos].strip()
+            right = header[colon_pos + 1:].strip()
+            parts = left.rsplit(None, 1)
+            if len(parts) == 2:
+                iter_type, iter_var = parts
+            else:
+                iter_type, iter_var = "var", parts[0]
+            list_expr = self._parse_expr(right)
+            return ForEach(
+                iter_type=iter_type,
+                iter_var=iter_var,
+                list_expr=list_expr,
+                body=body_stmts,
+            )
+        else:
+            # for (init; condition; update) — C-style
+            # Split par ; en respectant les parenthèses
+            parts = self._split_for_header(header)
+            if len(parts) == 3:
+                init_str, cond_str, update_str = parts
+                init_stmt = self._parse_statement(init_str + ";") if init_str.strip() else None
+                cond_expr = self._parse_expr(cond_str) if cond_str.strip() else BooleanLiteral(value=True)
+                update_stmt = self._parse_statement(update_str + ";") if update_str.strip() else None
+                return ForCStyle(
+                    init=init_stmt,
+                    condition=cond_expr,
+                    update=update_stmt,
+                    body=body_stmts,
+                )
+            # Fallback — try as for-each
+            return None
+
+    def _split_for_header(self, header: str) -> list:
+        """Split le header for par ; en respectant parenthèses et strings."""
+        parts = []
+        current = ""
+        depth = 0
+        in_string = False
+        for ch in header:
+            if in_string:
+                if ch == "\\" and len(current) > 0:
+                    current += ch
+                    continue
+                if ch == "'":
+                    in_string = False
+                current += ch
+            else:
+                if ch == "'":
+                    in_string = True
+                    current += ch
+                elif ch == "(":
+                    depth += 1
+                    current += ch
+                elif ch == ")":
+                    depth -= 1
+                    current += ch
+                elif ch == ";" and depth == 0:
+                    parts.append(current.strip())
+                    current = ""
+                else:
+                    current += ch
+        parts.append(current.strip())
+        return parts
 
     def _parse_if(self, stmt: str) -> IfElse:
         """Parse if (...) { ... } else if (...) { ... } else { ... }"""

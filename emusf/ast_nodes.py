@@ -214,6 +214,15 @@ class SwitchWhen(Stmt):
 
 
 @dataclass
+class ForCStyle(Stmt):
+    """for (init; condition; update) { body }"""
+    init: Optional[Stmt]
+    condition: Expr
+    update: Optional[Stmt]
+    body: list  # list[Stmt]
+
+
+@dataclass
 class WhileLoop(Stmt):
     condition: Expr
     body: list  # list[Stmt]
