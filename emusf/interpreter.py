@@ -452,6 +452,19 @@ class ApexInterpreter:
                     obj[field] = self._eval(val_expr)
                 return obj
 
+            # Check if it's a class (empty constructor: new ClassName())
+            if not expr.fields:
+                class_def = self._resolve_class(expr.sobject_type)
+                if class_def and (class_def.constructors or class_def.instance_fields or
+                                  any(not m.is_static for m in class_def.methods.values())):
+                    instance = {"_type": class_def.name, "_class": class_def}
+                    for fn in class_def.instance_fields:
+                        instance[fn] = None
+                    ctor = self._find_constructor(class_def, 0)
+                    if ctor:
+                        self._run_constructor(instance, class_def, ctor, [])
+                    return instance
+
             # SObject with named fields
             record = {"_sobject_type": expr.sobject_type}
             for field, val_expr in expr.fields.items():
