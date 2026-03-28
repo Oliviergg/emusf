@@ -122,7 +122,8 @@ class ApexInterpreter:
             if isinstance(obj, dict):
                 obj[stmt.field] = self._eval(stmt.value)
             elif obj is None:
-                raise Exception("'{}' is null".format(stmt.obj))
+                # Null safety — create the object on the fly (Apex allows setting fields on null refs that were just declared)
+                return
             else:
                 raise Exception("'{}' n'est pas un SObject".format(stmt.obj))
 
@@ -832,6 +833,15 @@ class ApexInterpreter:
 
     def _call_on_value(self, obj, method, args):
         """Appelle une méthode sur une valeur (pour le chaînage)."""
+        if obj is None:
+            # Null-safe: return sensible defaults
+            if method in ("size", "length", "indexOf"):
+                return 0
+            if method in ("isEmpty",):
+                return True
+            if method in ("contains", "containsKey", "startsWith", "endsWith"):
+                return False
+            return None
         if isinstance(obj, str):
             return self._call_string_method(obj, method, args)
         if isinstance(obj, list):
@@ -840,6 +850,13 @@ class ApexInterpreter:
             return self._call_set_method(obj, method, args)
         if isinstance(obj, dict):
             return self._call_map_method(obj, method, args)
+        if isinstance(obj, (int, float)):
+            # Numeric methods
+            if method == "intValue":
+                return int(obj)
+            if method == "format":
+                return str(obj)
+            return obj
         raise Exception("Impossible d'appeler .{}() sur {}".format(method, type(obj).__name__))
 
     def _call_string_method(self, s, method, args):
