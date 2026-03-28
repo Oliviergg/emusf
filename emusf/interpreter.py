@@ -791,6 +791,40 @@ class ApexInterpreter:
             if method == "getOrgDomainUrl":
                 return {"_type": "URL", "_url": "https://test.salesforce.com"}
 
+        # Database static methods
+        if call.obj == "Database":
+            if method in ("insert", "update"):
+                records = args[0] if args else None
+                if isinstance(records, list):
+                    for r in records:
+                        if isinstance(r, dict) and "_sobject_type" in r:
+                            sobject = r["_sobject_type"]
+                            data = {k: v for k, v in r.items() if k != "_sobject_type"}
+                            if method == "insert":
+                                result = self.org.insert(sobject, [data])
+                                r["Id"] = result.record_ids[0]
+                            else:
+                                self.org.update(sobject, [data])
+                    # Return list of SaveResult
+                    return [{"_type": "SaveResult", "success": True, "id": r.get("Id")} for r in records]
+                elif isinstance(records, dict) and "_sobject_type" in records:
+                    sobject = records["_sobject_type"]
+                    data = {k: v for k, v in records.items() if k != "_sobject_type"}
+                    if method == "insert":
+                        result = self.org.insert(sobject, [data])
+                        records["Id"] = result.record_ids[0]
+                    else:
+                        self.org.update(sobject, [data])
+                    return {"_type": "SaveResult", "success": True, "id": records.get("Id")}
+                return None
+            if method == "delete":
+                records = args[0] if args else None
+                # Simplified — just return success
+                return [{"_type": "SaveResult", "success": True}]
+            if method == "query":
+                soql = args[0] if args else ""
+                return self.org.execute_soql("[{}]".format(soql), context=self.variables)
+
         # Blob static methods
         if call.obj == "Blob":
             if method == "valueOf":
@@ -881,6 +915,12 @@ class ApexInterpreter:
             "equals": lambda: s == args[0] if args else False,
             "equalsIgnoreCase": lambda: s.lower() == args[0].lower() if args and isinstance(args[0], str) else False,
             "charAt": lambda: s[int(args[0])] if args else '',
+            "repeat": lambda: s * int(args[0]) if args else s,
+            "abbreviate": lambda: (s[:int(args[0]) - 3] + "...") if args and len(s) > int(args[0]) else s,
+            "capitalize": lambda: s[0].upper() + s[1:] if s else s,
+            "escapeSingleQuotes": lambda: s.replace("'", "\\'"),
+            "normalizeSpace": lambda: " ".join(s.split()),
+            "countMatches": lambda: s.count(args[0]) if args else 0,
         }
         if method in methods:
             return methods[method]()
@@ -955,6 +995,15 @@ class ApexInterpreter:
         # SystemLabel — System.Label.XXX returns ''
         if m.get("_type") == "SystemLabel":
             return ""  # All custom labels return empty string
+
+        # SaveResult
+        if m.get("_type") == "SaveResult":
+            if method == "isSuccess":
+                return m.get("success", True)
+            if method == "getId":
+                return m.get("id")
+            if method == "getErrors":
+                return m.get("errors", [])
 
         # ApexType — Type.forName().newInstance()
         if m.get("_type") == "ApexType":
