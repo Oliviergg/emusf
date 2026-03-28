@@ -223,3 +223,160 @@ def get_default_layout(layouts_dir: str, sobject_name: str) -> Optional[PageLayo
     if not paths:
         return None
     return parse_layout(paths[0])
+
+
+# ============================================================
+# ListView parsing
+# ============================================================
+
+# Mapping des noms de colonnes SFDX listView → champ PG
+# Les listViews utilisent OBJECT.FIELD ou des noms spéciaux
+LISTVIEW_COLUMN_MAP = {
+    # Account
+    "ACCOUNT.NAME": "name",
+    "ACCOUNT.PHONE1": "phone",
+    "ACCOUNT.TYPE": "type",
+    "ACCOUNT.ADDRESS1_CITY": "billingcity",
+    "ACCOUNT.ADDRESS1_STATE": "billingstate",
+    "ACCOUNT.ADDRESS1_ZIP": "billingpostalcode",
+    "ACCOUNT.CREATED_DATE": "createddate",
+    "ACCOUNT.LAST_UPDATE": "lastmodifieddate",
+    "ACCOUNT.ACCOUNT_NUMBER": "accountnumber",
+    "ACCOUNT.INDUSTRY": "industry",
+    "ACCOUNT.SITE": "site",
+    # Contact
+    "FULL_NAME": "name",
+    "CONTACT.FIRST_NAME": "firstname",
+    "CONTACT.LAST_NAME": "lastname",
+    "CONTACT.TITLE": "title",
+    "CONTACT.PHONE1": "phone",
+    "CONTACT.PHONE3": "mobilephone",
+    "CONTACT.EMAIL": "email",
+    "CONTACT.CREATED_DATE": "createddate",
+    "CONTACT.BIRTHDATE": "birthdate",
+    "CONTACT.ACCOUNT_NAME": "accountid",
+    # Contract
+    "CONTRACT.CONTRACT_NUMBER": "contractnumber",
+    "CONTRACT.NAME": "name",
+    "CONTRACT.STATUS": "status",
+    "CONTRACT.START_DATE": "startdate",
+    "CONTRACT.END_DATE": "enddate",
+    "CONTRACT.CREATED_DATE": "createddate",
+    "CUSTOMER_SIGNED_DATE": "customersigneddate",
+    # Opportunity
+    "OPPORTUNITY.NAME": "name",
+    "OPPORTUNITY.STAGE_NAME": "stagename",
+    "OPPORTUNITY.AMOUNT": "amount",
+    "OPPORTUNITY.CLOSE_DATE": "closedate",
+    "OPPORTUNITY.CREATED_DATE": "createddate",
+    "OPPORTUNITY.TYPE": "type",
+    "OPPORTUNITY.RECORDTYPE": "recordtypeid",
+    # Common
+    "SALES.ACCOUNT.NAME": "accountid",
+    "CORE.USERS.ALIAS": "ownerid",
+    "CORE.USERS.FULL_NAME": "ownerid",
+    "RECORDTYPE": "recordtypeid",
+    "CREATED_DATE": "createddate",
+    "LAST_UPDATE": "lastmodifieddate",
+}
+
+
+@dataclass
+class ListViewFilter:
+    field: str = ""
+    operation: str = ""
+    value: str = ""
+
+
+@dataclass
+class ListViewDef:
+    name: str = ""
+    label: str = ""
+    columns: list[str] = field(default_factory=list)
+    pg_columns: list[str] = field(default_factory=list)
+    column_labels: dict[str, str] = field(default_factory=dict)
+    filter_scope: str = "Everything"
+    filters: list[ListViewFilter] = field(default_factory=list)
+    boolean_filter: Optional[str] = None
+
+
+def _resolve_column(col_name: str) -> str:
+    """Convertit un nom de colonne listView en nom de colonne PG."""
+    if col_name in LISTVIEW_COLUMN_MAP:
+        return LISTVIEW_COLUMN_MAP[col_name]
+    # Custom fields: juste lowercase
+    return col_name.lower()
+
+
+def _column_label(col_name: str) -> str:
+    """Génère un label lisible depuis un nom de colonne listView."""
+    if col_name in LISTVIEW_COLUMN_MAP:
+        # Utiliser la partie après le dernier point
+        parts = col_name.split(".")
+        return parts[-1].replace("_", " ").title()
+    return col_name.replace("__c", "").replace("_", " ")
+
+
+def parse_listview(path: str) -> ListViewDef:
+    """Parse un fichier .listView-meta.xml."""
+    tree = ET.parse(path)
+    root = tree.getroot()
+
+    lv = ListViewDef()
+    lv.name = _text(root, "fullName") or ""
+    lv.label = _text(root, "label") or lv.name
+    lv.filter_scope = _text(root, "filterScope") or "Everything"
+    lv.boolean_filter = _text(root, "booleanFilter")
+
+    # Colonnes (dédupliquées)
+    seen_pg = set()
+    for col_el in root.findall(_tag("columns")):
+        if col_el.text:
+            col_name = col_el.text.strip()
+            pg_col = _resolve_column(col_name)
+            if pg_col not in seen_pg:
+                seen_pg.add(pg_col)
+                lv.columns.append(col_name)
+                lv.pg_columns.append(pg_col)
+                lv.column_labels[pg_col] = _column_label(col_name)
+
+    # Filtres
+    for f_el in root.findall(_tag("filters")):
+        filt = ListViewFilter()
+        filt.field = _text(f_el, "field") or ""
+        filt.operation = _text(f_el, "operation") or ""
+        filt.value = _text(f_el, "value") or ""
+        lv.filters.append(filt)
+
+    return lv
+
+
+def load_listviews(objects_dir: str, sobject_name: str) -> list[ListViewDef]:
+    """Charge toutes les listViews d'un SObject."""
+    lv_dir = os.path.join(objects_dir, sobject_name, "listViews")
+    results = []
+    if not os.path.isdir(lv_dir):
+        return results
+    for fname in sorted(os.listdir(lv_dir)):
+        if fname.endswith(".listView-meta.xml"):
+            try:
+                lv = parse_listview(os.path.join(lv_dir, fname))
+                results.append(lv)
+            except ET.ParseError:
+                continue
+    return results
+
+
+def get_default_listview(objects_dir: str, sobject_name: str) -> Optional[ListViewDef]:
+    """Retourne la listView par défaut (All*, Tous*, ou la plus complète)."""
+    lvs = load_listviews(objects_dir, sobject_name)
+    if not lvs:
+        return None
+    # Chercher "All*" ou "Tous *" d'abord
+    for lv in lvs:
+        if lv.name.startswith("All") or lv.label.lower().startswith("tous"):
+            if lv.pg_columns:  # Skip les vues sans colonnes
+                return lv
+    # Sinon la vue avec le plus de colonnes
+    best = max(lvs, key=lambda lv: len(lv.pg_columns))
+    return best if best.pg_columns else lvs[0]

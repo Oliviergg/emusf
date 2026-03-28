@@ -19,6 +19,9 @@ from emusf.layout_parser import (
     load_field_labels,
     find_layouts,
     get_default_layout,
+    load_listviews,
+    get_default_listview,
+    ListViewDef,
     PageLayout,
 )
 
@@ -539,22 +542,105 @@ def record_detail_view(sobject: str, record_id: str):
 
 def list_view(sobject: str):
     """Vue liste d'un SObject."""
+    import psycopg2.extras
+
     config = SOBJECT_CONFIG.get(sobject, {
         "label": sobject, "icon": "standard:record", "name_field": "Name",
     })
+
+    # Charger les listViews SFDX
+    # Normaliser le nom pour chercher dans SFDX (Account, Contract...)
+    sfdx_name = sobject
+    for s in SOBJECT_CONFIG:
+        if s.lower() == sobject.lower():
+            sfdx_name = s
+            break
+    all_listviews = load_listviews(OBJECTS_DIR, sfdx_name)
+
+    # Sélectionner la listView courante
+    lv_param = request.args.get("view")
+    current_lv = None
+    if lv_param:
+        for lv in all_listviews:
+            if lv.name == lv_param:
+                current_lv = lv
+                break
+    if not current_lv:
+        current_lv = get_default_listview(OBJECTS_DIR, sfdx_name)
 
     page = int(request.args.get("page", 1))
     per_page = 25
     search = request.args.get("q", "")
     offset = (page - 1) * per_page
 
-    rows, total = fetch_list(sobject, limit=per_page, offset=offset, search=search)
+    pg_table = sobject.lower()
+    pg_cols = org.get_columns(pg_table)
+    if not pg_cols:
+        pg_cols = []
+    pg_cols_set = set(pg_cols)
+
+    # Déterminer les colonnes à afficher
+    if current_lv and current_lv.pg_columns:
+        # Utiliser les colonnes de la listView, filtrées par ce qui existe en PG
+        display_cols = []
+        col_labels = {}
+        for i, pg_col in enumerate(current_lv.pg_columns):
+            if pg_col in pg_cols_set:
+                display_cols.append(pg_col)
+                col_labels[pg_col] = current_lv.column_labels.get(pg_col, pg_col)
+        # Toujours inclure id en premier si absent
+        if "id" not in display_cols and "id" in pg_cols_set:
+            display_cols.insert(0, "id")
+            col_labels["id"] = "ID"
+    else:
+        display_cols = _get_list_columns_fallback(sobject, pg_cols)
+        col_labels = {}
+
+    # Colonnes à SELECT (display + id pour les liens)
+    select_cols = list(dict.fromkeys(["id"] + display_cols))
+    select_cols = [c for c in select_cols if c in pg_cols_set]
+
+    # WHERE
+    where_clause = ""
+    where_params = []
+    if search:
+        if "name" in pg_cols_set:
+            where_clause = " WHERE name ILIKE %s"
+            where_params = ["%{}%".format(search)]
+
+    # Count
+    cur = org.conn.cursor()
+    cur.execute("SELECT count(*) FROM data.{}{}".format(pg_table, where_clause), where_params)
+    total = cur.fetchone()[0]
+    cur.close()
     total_pages = (total + per_page - 1) // per_page
 
-    field_labels = get_field_labels(sobject)
+    # Fetch rows
+    order_col = "id"
+    if "name" in pg_cols_set:
+        order_col = "name"
+    elif "createddate" in pg_cols_set:
+        order_col = "createddate DESC"
 
-    # Colonnes à afficher dans la liste
-    display_cols = _get_list_columns(sobject, rows)
+    cur = org.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    sql = "SELECT {} FROM data.{}{} ORDER BY {} LIMIT {} OFFSET {}".format(
+        ", ".join(select_cols), pg_table, where_clause,
+        order_col, per_page, offset,
+    )
+    try:
+        cur.execute(sql, where_params)
+        rows = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        rows = []
+    finally:
+        cur.close()
+
+    field_labels = get_field_labels(sfdx_name)
+    # Merge listView labels (plus spécifiques)
+    if col_labels:
+        for k, v in col_labels.items():
+            if k not in field_labels:
+                field_labels[k] = {"label": v, "type": "Text"}
 
     return render_template(
         "list_view.html",
@@ -568,22 +654,18 @@ def list_view(sobject: str):
         search=search,
         display_cols=display_cols,
         field_labels=field_labels,
+        all_listviews=all_listviews,
+        current_lv=current_lv,
     )
 
 
-def _get_list_columns(sobject: str, rows: list) -> list[str]:
-    """Détermine les colonnes à afficher en liste."""
-    if not rows:
-        return ["id", "name"]
-
-    # Priorité aux colonnes intéressantes
+def _get_list_columns_fallback(sobject: str, pg_cols: list) -> list[str]:
+    """Colonnes par défaut quand aucune listView n'est disponible."""
     priority = ["id", "name", "status", "accountid", "type", "phone",
-                 "email", "website", "createddate", "lastmodifieddate"]
-    available = list(rows[0].keys())
+                "email", "website", "createddate", "lastmodifieddate"]
+    available = set(pg_cols)
     cols = [c for c in priority if c in available]
-
-    # Compléter jusqu'à 8 colonnes
-    for c in available:
+    for c in pg_cols:
         if c not in cols and len(cols) < 8:
             cols.append(c)
     return cols
