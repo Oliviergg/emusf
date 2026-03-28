@@ -376,6 +376,12 @@ class ApexInterpreter:
             raise Exception("Opérateur inconnu: {}".format(expr.op))
 
         elif isinstance(expr, NewSObject):
+            # Special types
+            if expr.sobject_type in ("HttpRequest", "Http", "HttpResponse"):
+                obj = {"_type": expr.sobject_type}
+                for field, val_expr in expr.fields.items():
+                    obj[field] = self._eval(val_expr)
+                return obj
             record = {"_sobject_type": expr.sobject_type}
             for field, val_expr in expr.fields.items():
                 record[field] = self._eval(val_expr)
@@ -452,7 +458,7 @@ class ApexInterpreter:
         method = call.method
 
         # Null-safe: appeler une méthode sur null retourne null
-        if obj is None and call.obj not in self.classes and call.obj != "_self" and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL", "UserInfo"):
+        if obj is None and call.obj not in self.classes and call.obj != "_self" and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits"):
             # Vérifier aussi si c'est une méthode de la classe courante
             if not (self._current_class and call.method in self._current_class.methods):
                 return None
@@ -461,7 +467,11 @@ class ApexInterpreter:
         if isinstance(obj, (list, set)):
             return self._call_on_value(obj, method, args)
 
-        # Special typed objects (Pattern, Matcher, Date, etc.)
+        # All typed dicts (Pattern, Matcher, Date, HttpRequest, HttpResponse, etc.)
+        if isinstance(obj, dict) and "_type" in obj:
+            return self._call_map_method(obj, method, args)
+
+        # Special typed objects (fallback check) (Pattern, Matcher, Date, etc.)
         elif isinstance(obj, dict) and obj.get("_type") in ("Pattern", "Matcher", "Date", "DateTime"):
             return self._call_map_method(obj, method, args)
 
@@ -532,6 +542,20 @@ class ApexInterpreter:
                     raise ApexException("Argument cannot be null")
                 return int(val)  # Lève ValueError si pas un nombre — comme Apex
 
+        # JSON static methods
+        if call.obj == "JSON":
+            import json as _json
+            if method == "serialize":
+                return _json.dumps(args[0]) if args else "null"
+            elif method == "serializePretty":
+                return _json.dumps(args[0], indent=2) if args else "null"
+            elif method == "deserialize":
+                if len(args) >= 2 and isinstance(args[0], str):
+                    return _json.loads(args[0])
+                return _json.loads(args[0]) if args else None
+            elif method == "deserializeUntyped":
+                return _json.loads(args[0]) if args and isinstance(args[0], str) else None
+
         # Pattern static methods
         if call.obj == "Pattern":
             if method == "compile":
@@ -555,6 +579,54 @@ class ApexInterpreter:
             elif method == "ceil":
                 import math
                 return int(math.ceil(args[0])) if args else 0
+
+        # System static methods
+        if call.obj == "System":
+            if method == "debug":
+                val = args[0] if args else ""
+                self.output.append(str(val))
+                print("DEBUG: {}".format(val))
+                return None
+            elif method == "today":
+                import datetime
+                d = datetime.date.today()
+                return {"_type": "Date", "year": d.year, "month": d.month, "day": d.day}
+            elif method == "now":
+                import datetime
+                d = datetime.datetime.now()
+                return {"_type": "DateTime", "year": d.year, "month": d.month, "day": d.day}
+
+        # Http / HttpRequest / HttpResponse — mock
+        if call.obj == "Http" or (obj is not None and isinstance(obj, dict) and obj.get("_type") == "Http"):
+            if method == "send":
+                # Return a mock response
+                return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
+                        "_headers": {}}
+
+        # URL static methods
+        if call.obj == "URL":
+            if method == "getOrgDomainUrl":
+                return {"_type": "URL", "_url": "https://test.salesforce.com"}
+
+        # Blob static methods
+        if call.obj == "Blob":
+            if method == "valueOf":
+                return args[0] if args else ""
+
+        # EncodingUtil static methods
+        if call.obj == "EncodingUtil":
+            if method == "base64Encode":
+                import base64
+                val = args[0] if args else ""
+                if isinstance(val, str):
+                    return base64.b64encode(val.encode()).decode()
+                return ""
+            if method == "urlEncode":
+                import urllib.parse
+                return urllib.parse.quote(str(args[0]), safe='') if args else ""
+            if method == "base64Decode":
+                import base64
+                return base64.b64decode(str(args[0])).decode() if args else ""
 
         # Date static methods
         if call.obj == "Date":
@@ -680,6 +752,47 @@ class ApexInterpreter:
                 match = m["_compiled"].fullmatch(m["_text"])
                 m["_match"] = match
                 return match is not None
+
+        # HttpRequest mock
+        if m.get("_type") == "HttpRequest":
+            if method in ("setEndpoint", "setMethod", "setHeader", "setBody", "setTimeout"):
+                m["_" + method[3:].lower() if method.startswith("set") else method] = args[0] if args else None
+                return None
+            if method == "getEndpoint":
+                return m.get("_endpoint", "")
+            if method == "getMethod":
+                return m.get("_method", "GET")
+            if method == "getBody":
+                return m.get("_body", "")
+            return None
+
+        # HttpResponse mock
+        if m.get("_type") == "HttpResponse":
+            if method == "getStatusCode":
+                return m.get("_statusCode", 200)
+            if method == "getBody":
+                return m.get("_body", "")
+            if method == "getHeader":
+                return m.get("_headers", {}).get(args[0], "") if args else ""
+            if method in ("setStatusCode", "setBody", "setHeader"):
+                if method == "setStatusCode":
+                    m["_statusCode"] = args[0] if args else 200
+                elif method == "setBody":
+                    m["_body"] = args[0] if args else ""
+                elif method == "setHeader" and len(args) >= 2:
+                    if "_headers" not in m:
+                        m["_headers"] = {}
+                    m["_headers"][args[0]] = args[1]
+                return None
+            return None
+
+        # URL object
+        if m.get("_type") == "URL":
+            if method == "toExternalForm":
+                return m.get("_url", "")
+            if method == "getHost":
+                return m.get("_url", "").split("//")[-1].split("/")[0]
+            return m.get("_url", "")
 
         # Date object
         if m.get("_type") == "Date":

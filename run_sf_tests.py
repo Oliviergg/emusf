@@ -1,6 +1,6 @@
 """
 Lance les vrais tests Apex du projet Salesforce sf-btp dans emusf.
-Mesure l'avancement : combien de méthodes de test passent.
+Charge toutes les classes source XPL/ILG, puis exécute chaque méthode @isTest.
 """
 
 import os
@@ -25,17 +25,15 @@ SF_CLASSES = "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/classes"
 
 
 class SfTestInterpreter(ApexTestInterpreter):
-    """Interpréteur qui ignore Test.startTest(), Test.stopTest(), @isTest etc."""
+    """Interpréteur qui ignore Test.startTest(), Test.stopTest(), etc."""
 
     def _exec_method_call(self, call):
-        # Ignore Test.startTest() / Test.stopTest()
-        if call.obj == "Test" and call.method in ("startTest", "stopTest"):
+        if call.obj == "Test" and call.method in ("startTest", "stopTest", "setMock"):
             return None
         return super()._exec_method_call(call)
 
 
 def load_class_source(class_name):
-    """Charge le source d'une classe depuis le repo sf-btp."""
     path = os.path.join(SF_CLASSES, class_name + ".cls")
     if not os.path.exists(path):
         return None
@@ -44,19 +42,16 @@ def load_class_source(class_name):
 
 
 def extract_test_methods(source):
-    """Extrait les noms des méthodes de test (@isTest ou testMethod)."""
     methods = []
     lines = source.split("\n")
     for i, line in enumerate(lines):
         stripped = line.strip()
-        # @isTest annotation
         if stripped.lower() in ("@istest", "@istest"):
             for j in range(i + 1, min(i + 5, len(lines))):
                 m = re.search(r'(?:static\s+)?void\s+(\w+)\s*\(', lines[j])
                 if m:
                     methods.append(m.group(1))
                     break
-        # testMethod keyword
         elif "testMethod" in stripped or "testmethod" in stripped:
             m = re.search(r'(?:testMethod|testmethod)\s+void\s+(\w+)\s*\(', stripped)
             if m:
@@ -64,53 +59,159 @@ def extract_test_methods(source):
     return methods
 
 
-def run_sf_test_class(test_class_name, dependencies=None):
-    """
-    Charge une classe de test SF et ses dépendances, exécute chaque méthode.
-    Retourne {method: {passed, failed, errors}}.
-    """
-    if dependencies is None:
-        dependencies = []
-
-    org = FakeOrg()
-    org.create_sobject("Account", {"Name": "TEXT"})
-
+def load_all_source_classes(prefixes):
+    """Charge toutes les classes source (non-test) pour les préfixes donnés."""
     parser = ApexParser()
+    classes = {}
+    constants = {}
 
-    # Charger les dépendances
-    for dep in dependencies:
-        source = load_class_source(dep)
-        if source is None:
-            print("  {} Dépendance manquante: {}{}".format(YELLOW, dep, RESET))
+    all_files = sorted(os.listdir(SF_CLASSES))
+    for fname in all_files:
+        if not fname.endswith(".cls") or fname.endswith("-meta.xml"):
             continue
+        name = fname[:-4]
+        # Skip test classes
+        if re.search(r'test', name, re.IGNORECASE) and name not in ("TestDataFactory", "TestDataFactory2"):
+            continue
+        # Match prefixes
+        if not any(name.startswith(p) for p in prefixes):
+            continue
+
+        source = load_class_source(name)
+        if not source:
+            continue
+
         try:
             class_def = parser.parse_full_class(source)
-            # On stocke pour injection dans l'interpréteur
-            dependencies_loaded = getattr(run_sf_test_class, '_deps', {})
-            dependencies_loaded[dep] = class_def
-            run_sf_test_class._deps = dependencies_loaded
-        except Exception as e:
-            print("  {} Parse error on {}: {}{}".format(YELLOW, dep, e, RESET))
+            classes[class_def.name] = class_def
+        except Exception:
+            pass
 
-    # Charger la classe de test
+    return classes
+
+
+def run_test_class(test_class_name, all_classes, parser):
+    """Exécute une classe de test et retourne les résultats par méthode."""
     test_source = load_class_source(test_class_name)
     if test_source is None:
-        print("  {} Classe de test non trouvée: {}{}".format(RED, test_class_name, RESET))
         return {}
 
     test_methods = extract_test_methods(test_source)
     if not test_methods:
-        print("  {} Aucune méthode @isTest trouvée{}".format(YELLOW, RESET))
         return {}
 
     results = {}
 
     for method_name in test_methods:
+        org = FakeOrg()
+        # Standard objects
+        org.create_sobject("Account", {
+            "Name": "TEXT", "Type": "TEXT", "RecordTypeId": "TEXT",
+            "SIRET__c": "TEXT", "SIRET_NOR__c": "TEXT", "BillingCity": "TEXT",
+            "BillingPostalCode": "TEXT", "BillingStreet": "TEXT", "BillingCountry": "TEXT",
+            "Phone": "TEXT", "Industry": "TEXT", "OwnerId": "TEXT",
+            "IsDeleted": "INTEGER DEFAULT 0", "Description": "TEXT",
+        })
+        org.create_sobject("Contact", {
+            "LastName": "TEXT", "FirstName": "TEXT", "AccountId": "TEXT",
+            "Email": "TEXT", "Phone": "TEXT", "Title": "TEXT",
+        })
+        org.create_sobject("Lead", {
+            "LastName": "TEXT", "FirstName": "TEXT", "Company": "TEXT",
+            "Email": "TEXT", "Phone": "TEXT", "Status": "TEXT",
+            "RecordTypeId": "TEXT", "Description": "TEXT",
+            "Street": "TEXT", "City": "TEXT", "PostalCode": "TEXT", "Country": "TEXT",
+        })
+        org.create_sobject("Opportunity", {
+            "Name": "TEXT", "AccountId": "TEXT", "StageName": "TEXT",
+            "Amount": "REAL", "CloseDate": "TEXT",
+        })
+        org.create_sobject("RecordType", {
+            "Name": "TEXT", "DeveloperName": "TEXT", "SObjectType": "TEXT",
+            "IsActive": "INTEGER DEFAULT 1",
+        })
+        org.create_sobject("ContentVersion", {
+            "Title": "TEXT", "PathOnClient": "TEXT", "VersionData": "TEXT",
+            "ContentDocumentId": "TEXT", "FileExtension": "TEXT",
+        })
+        # XPL custom objects
+        org.create_sobject("XPLMarchePublic__c", {
+            "Name": "TEXT", "IDENTIFIANT_EXPLORE__c": "TEXT", "CLE_MARCHE_PUBLIC_EXPLORE__c": "TEXT",
+            "TITRE_MARCHE__c": "TEXT", "ORGANISME__c": "TEXT", "STATUS__c": "TEXT",
+            "CP__c": "TEXT", "VILLE__c": "TEXT", "TYPE_AVIS__c": "TEXT",
+            "Objet__c": "TEXT", "Description__c": "TEXT",
+            "Date_Limite_Reponse__c": "TEXT", "Date_Publication__c": "TEXT",
+            "OwnerId": "TEXT", "RecordTypeId": "TEXT",
+            "Lieu_Execution_Code_Postal__c": "TEXT", "Lieu_Execution_Ville__c": "TEXT",
+            "Lieu_Execution_Adresse__c": "TEXT", "Lieu_Execution_Pays__c": "TEXT",
+            "MarchePublic_Initial__c": "TEXT", "statusApplication__c": "TEXT",
+            "Formes_Marche__c": "TEXT", "Type_Contrat__c": "TEXT",
+            "Procedures__c": "TEXT", "Localisations__c": "TEXT",
+            "Type_Prestations__c": "TEXT", "Missions__c": "TEXT",
+            "CreatedDate": "TEXT", "IsDeleted": "INTEGER DEFAULT 0",
+        })
+        org.create_sobject("XPL_Analyse__c", {
+            "Name": "TEXT", "XPLMarchePublic__c": "TEXT", "Status__c": "TEXT",
+            "TYPE_AVIS__c": "TEXT", "Score__c": "REAL", "Analyse_Type__c": "TEXT",
+            "XPL_Analyse_Type__c": "TEXT",
+            "Societes__c": "TEXT", "Resume__c": "TEXT",
+            "Date_limite_reponse__c": "TEXT", "Lieu_execution__c": "TEXT",
+            "Qualification_LLM__c": "TEXT", "Extraction_LLM__c": "TEXT",
+            "Markdown__c": "TEXT", "OwnerId": "TEXT",
+        })
+        org.create_sobject("XPL_Analyse_Type__c", {
+            "Name": "TEXT", "Prompt_Qualification__c": "TEXT",
+            "Prompt_Extract__c": "TEXT", "IsActive__c": "INTEGER DEFAULT 1",
+        })
+        org.create_sobject("XPLDCE__c", {
+            "Name": "TEXT", "XPLMarchePublic__c": "TEXT",
+            "URL__c": "TEXT", "FileName__c": "TEXT",
+        })
+        org.create_sobject("XPLValidFileForPrompt__c", {
+            "Name": "TEXT", "XPL_Analyse__c": "TEXT",
+        })
+        org.create_sobject("XPLSettings__c", {
+            "Name": "TEXT", "Value__c": "TEXT",
+        })
+        org.create_sobject("XPL_Prompt_by_analyse_type__c", {
+            "Name": "TEXT", "XPL_Analyse_Type__c": "TEXT",
+            "Prompt_Name__c": "TEXT", "Status__c": "TEXT",
+        })
+        org.create_sobject("XPL_Feedback__c", {
+            "Name": "TEXT", "XPL_Analyse__c": "TEXT",
+            "Rating__c": "TEXT", "Comment__c": "TEXT",
+        })
+        # ILG custom objects
+        org.create_sobject("ILGPortfolio__c", {
+            "Name": "TEXT", "Account__c": "TEXT", "Status__c": "TEXT",
+        })
+        org.create_sobject("ILGSurveillance__c", {
+            "Name": "TEXT", "Account__c": "TEXT", "ILGPortfolio__c": "TEXT",
+            "Status__c": "TEXT", "Active__c": "INTEGER DEFAULT 1",
+        })
+        org.create_sobject("ILGConsultation__c", {
+            "Name": "TEXT", "Account__c": "TEXT", "ILGPortfolio__c": "TEXT",
+        })
+        org.create_sobject("ILGNotation__c", {
+            "Name": "TEXT", "Account__c": "TEXT", "Score__c": "REAL",
+        })
+        org.create_sobject("Queue_Job__c", {
+            "Name": "TEXT", "Status__c": "TEXT", "Job_Type__c": "TEXT",
+            "Payload__c": "TEXT", "Error_Message__c": "TEXT",
+        })
+        org.create_sobject("LLM_Prompt_Result__c", {
+            "Name": "TEXT", "Prompt_Name__c": "TEXT", "Result__c": "TEXT",
+            "XPL_Analyse__c": "TEXT",
+        })
+        # Relationships
+        org.register_relationship("Contacts", "Contact", "AccountId", "Account")
+        org.register_relationship("XPL_Analyses__r", "XPL_Analyse__c", "XPLMarchePublic__c", "XPLMarchePublic__c")
+        org.register_relationship("XPLDCEs__r", "XPLDCE__c", "XPLMarchePublic__c", "XPLMarchePublic__c")
+
         interp = SfTestInterpreter(org)
 
-        # Charger les dépendances dans l'interpréteur
-        deps = getattr(run_sf_test_class, '_deps', {})
-        for name, cls in deps.items():
+        # Charger toutes les classes source
+        for name, cls in all_classes.items():
             interp.classes[name] = cls
             for cname, (ctype, expr) in cls.constants.items():
                 try:
@@ -134,66 +235,84 @@ def run_sf_test_class(test_class_name, dependencies=None):
                 "passed": interp.assertions_passed,
                 "failed": interp.assertions_failed,
                 "failures": interp.failures,
-                "error": str(e),
+                "error": str(e)[:100],
             }
 
     return results
 
 
 def print_results(test_class, results):
-    """Affiche les résultats d'une classe de test."""
     total = len(results)
     passed = sum(1 for r in results.values() if r["status"] == "PASS")
-    failed = sum(1 for r in results.values() if r["status"] == "FAIL")
-    errors = sum(1 for r in results.values() if r["status"] == "ERROR")
 
-    print("\n{}{}{} — {}/{} methods passed".format(BOLD, test_class, RESET, passed, total))
+    print("\n{}{}{} — {}/{} methods".format(BOLD, test_class, RESET, passed, total))
 
     for method, r in results.items():
         if r["status"] == "PASS":
-            icon = GREEN + "✓" + RESET
+            icon = GREEN + "  ✓" + RESET
         elif r["status"] == "FAIL":
-            icon = RED + "✗" + RESET
+            icon = RED + "  ✗" + RESET
         else:
-            icon = YELLOW + "⚠" + RESET
+            icon = YELLOW + "  ⚠" + RESET
 
         detail = ""
         if r["error"]:
-            # Truncate long errors
-            err = r["error"]
-            if len(err) > 80:
-                err = err[:80] + "..."
-            detail = DIM + " — " + err + RESET
+            detail = DIM + " — " + r["error"] + RESET
         elif r["failures"]:
-            detail = DIM + " — " + r["failures"][0] + RESET
+            detail = DIM + " — " + r["failures"][0][:80] + RESET
 
-        print("  {} {} ({} assertions){}".format(icon, method, r["passed"] + r["failed"], detail))
+        print("{} {} ({} assert){}".format(icon, method, r["passed"] + r["failed"], detail))
 
     return passed, total
 
 
 # --- Main ---
 if __name__ == "__main__":
-    test_suites = [
-        ("XPLUtilTest", ["XPLUtil"]),
-        ("XPLAddressNormalizerTest", ["XPLAddressNormalizer"]),
-        ("XPLDateParserTest", ["XPLDateParser"]),
-        ("FuzzyWuzzyTest", ["FuzzyWuzzy"]),
-    ]
+    parser = ApexParser()
+
+    # Charger toutes les classes source
+    prefixes = ["XPL", "ILG", "FuzzyWuzzy", "ParQueJob"]
+    print(DIM + "Chargement des classes source..." + RESET)
+    all_classes = load_all_source_classes(prefixes)
+    print("  {} classes chargées".format(len(all_classes)))
+
+    # Trouver toutes les classes de test
+    test_pattern = sys.argv[1] if len(sys.argv) > 1 else None
+    test_files = []
+    for fname in sorted(os.listdir(SF_CLASSES)):
+        if not fname.endswith(".cls") or fname.endswith("-meta.xml"):
+            continue
+        name = fname[:-4]
+        if not re.search(r'test', name, re.IGNORECASE):
+            continue
+        if not any(name.startswith(p) for p in ["XPL", "ILG", "FuzzyWuzzy"]):
+            continue
+        if test_pattern and test_pattern not in name:
+            continue
+        test_files.append(name)
 
     grand_passed = 0
     grand_total = 0
+    class_results = {}
 
-    for test_class, deps in test_suites:
-        run_sf_test_class._deps = {}
-        results = run_sf_test_class(test_class, deps)
-        p, t = print_results(test_class, results)
-        grand_passed += p
-        grand_total += t
+    for test_class in test_files:
+        results = run_test_class(test_class, all_classes, parser)
+        if results:
+            p, t = print_results(test_class, results)
+            grand_passed += p
+            grand_total += t
+            class_results[test_class] = (p, t)
 
-    print("\n" + BOLD + "=" * 50 + RESET)
+    # Summary
+    print("\n" + BOLD + "=" * 60 + RESET)
+    for cls, (p, t) in sorted(class_results.items()):
+        pct = int(100 * p / t) if t > 0 else 0
+        color = GREEN if p == t else YELLOW if p > 0 else RED
+        bar = "█" * (p * 20 // t) + "░" * (20 - p * 20 // t) if t > 0 else ""
+        print("  {} {:40s} {}{}/{}{}  {}".format(bar, cls, color, p, t, RESET, "✓" if p == t else ""))
+
     pct = int(100 * grand_passed / grand_total) if grand_total > 0 else 0
     color = GREEN if grand_passed == grand_total else YELLOW if grand_passed > 0 else RED
-    print("{}Total: {}/{} methods passed ({}%){}\n".format(
+    print("\n{}Total: {}/{} methods passed ({}%){}\n".format(
         color, grand_passed, grand_total, pct, RESET
     ))
