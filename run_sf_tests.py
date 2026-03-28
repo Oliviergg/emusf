@@ -158,6 +158,7 @@ def run_test_class(test_class_name, all_classes, parser):
             "Date_limite_reponse__c": "TEXT", "Lieu_execution__c": "TEXT",
             "Qualification_LLM__c": "TEXT", "Extraction_LLM__c": "TEXT",
             "Markdown__c": "TEXT", "OwnerId": "TEXT",
+            "Next_Action__c": "TEXT", "Lead__c": "TEXT",
         })
         org.create_sobject("XPL_Analyse_Type__c", {
             "Name": "TEXT", "Prompt_Qualification__c": "TEXT",
@@ -188,6 +189,7 @@ def run_test_class(test_class_name, all_classes, parser):
         org.create_sobject("ILGSurveillance__c", {
             "Name": "TEXT", "Account__c": "TEXT", "ILGPortfolio__c": "TEXT",
             "Status__c": "TEXT", "Active__c": "INTEGER DEFAULT 1",
+            "ILG_Id__c": "TEXT", "End_Date__c": "TEXT",
         })
         org.create_sobject("ILGConsultation__c", {
             "Name": "TEXT", "Account__c": "TEXT", "ILGPortfolio__c": "TEXT",

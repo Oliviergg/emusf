@@ -81,6 +81,11 @@ class FakeOrg:
         Insert des enregistrements dans un SObject.
         Auto-génère les Id si absents. Déclenche les triggers.
         """
+        # Auto-create table if it doesn't exist
+        if sobject not in self._tables:
+            cols = {k: "TEXT" for k in records[0].keys() if k != "Id"}
+            self.create_sobject(sobject, cols)
+
         # Auto-generate Ids
         for record in records:
             if "Id" not in record:
@@ -90,6 +95,18 @@ class FakeOrg:
         self._fire_triggers("before_insert", sobject, records)
 
         for record in records:
+            # Auto-add missing columns to the table
+            known = set(self._tables.get(sobject, []))
+            for col in record.keys():
+                if col not in known:
+                    try:
+                        self.conn.execute(
+                            "ALTER TABLE {} ADD COLUMN {} TEXT".format(sobject, col)
+                        )
+                        self._tables.setdefault(sobject, []).append(col)
+                    except Exception:
+                        pass
+
             columns = ", ".join(record.keys())
             placeholders = ", ".join(["?" for _ in record])
             self.conn.execute(

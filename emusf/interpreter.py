@@ -596,10 +596,9 @@ class ApexInterpreter:
                 d = datetime.datetime.now()
                 return {"_type": "DateTime", "year": d.year, "month": d.month, "day": d.day}
 
-        # Http / HttpRequest / HttpResponse — mock
-        if call.obj == "Http" or (obj is not None and isinstance(obj, dict) and obj.get("_type") == "Http"):
+        # Http.send() — mock (also check when obj is the Http dict)
+        if call.obj == "Http":
             if method == "send":
-                # Return a mock response
                 return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
                         "_headers": {}}
 
@@ -752,6 +751,12 @@ class ApexInterpreter:
                 match = m["_compiled"].fullmatch(m["_text"])
                 m["_match"] = match
                 return match is not None
+
+        # Http mock
+        if m.get("_type") == "Http":
+            if method == "send":
+                return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
+                        "_headers": {}}
 
         # HttpRequest mock
         if m.get("_type") == "HttpRequest":
