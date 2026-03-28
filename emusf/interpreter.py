@@ -402,6 +402,16 @@ class ApexInterpreter:
         elif isinstance(expr, ChainedCall):
             target = self._eval(expr.target)
             args = [self._eval(a) for a in expr.args]
+            # Field access on dict when no args (e.g., account.Name after get(0))
+            if not args and isinstance(target, dict) and expr.method in target:
+                return target[expr.method]
+            # Also check if it's a list (subquery result accessed as field)
+            if not args and isinstance(target, dict) and expr.method not in target:
+                # Could be a relationship field — check lowercase
+                for k, v in target.items():
+                    if k.lower() == expr.method.lower():
+                        return v
+                return None
             return self._call_on_value(target, expr.method, args)
 
         elif isinstance(expr, ArrayAccess):
