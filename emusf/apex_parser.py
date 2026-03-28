@@ -62,57 +62,140 @@ class ApexParser:
         # Parser les membres
         constants = {}
         methods = {}
+        instance_fields = {}
+        constructors = []
+        inner_classes = {}
 
-        self._parse_class_members(class_body, constants, methods)
+        self._parse_class_members(class_body, constants, methods,
+                                  instance_fields, constructors, inner_classes,
+                                  class_name)
+
+        # Extraire parent class
+        parent_class = None
+        extends_match = re.search(r'\bextends\s+(\w+)', source[:start])
+        if extends_match:
+            parent_class = extends_match.group(1)
 
         return ClassDef(
             name=class_name,
             constants=constants,
             methods=methods,
             sharing=sharing,
+            instance_fields=instance_fields,
+            constructors=constructors,
+            inner_classes=inner_classes,
+            parent_class=parent_class,
         )
 
-    def _parse_class_members(self, body: str, constants: dict, methods: dict):
-        """Parse les membres d'une classe (constantes et méthodes)."""
-        # Strip comments
-        lines = body.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("//")]
-        body = "\n".join(lines)
-
-        # Trouver les méthodes
-        method_pattern = re.compile(
-            r'(?:(?:public|private|protected|global)\s+)?'
-            r'(?:static\s+)?'
-            r'(\w+(?:<[\w,\s]+>)?)\s+'  # return type
-            r'(\w+)\s*'  # method name
-            r'\(([^)]*)\)\s*\{',  # params
-            re.DOTALL
-        )
-
-        pos = 0
-        method_positions = []
-        for m in method_pattern.finditer(body):
-            return_type = m.group(1)
-            method_name = m.group(2)
-            params_str = m.group(3)
-
-            # Skip inner class definitions
-            if return_type == "class":
+    def _parse_class_members(self, body: str, constants: dict, methods: dict,
+                             instance_fields: dict, constructors: list,
+                             inner_classes: dict, class_name: str):
+        """Parse les membres d'une classe."""
+        # Strip single-line comments (but not inside strings)
+        cleaned_lines = []
+        for line in body.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("//"):
                 continue
+            # Remove inline // comments (naive but sufficient)
+            in_str = False
+            for ci, ch in enumerate(line):
+                if ch == "'" and not in_str:
+                    in_str = True
+                elif ch == "'" and in_str:
+                    in_str = False
+                elif ch == "/" and ci + 1 < len(line) and line[ci + 1] == "/" and not in_str:
+                    line = line[:ci]
+                    break
+            cleaned_lines.append(line)
+        body = "\n".join(cleaned_lines)
 
-            # Extraire le body de la méthode
-            body_start = m.end()
+        # --- 1. Find inner classes first ---
+        inner_pattern = re.compile(
+            r'(?:public|private|protected|global)\s+'
+            r'(?:virtual\s+|abstract\s+)?'
+            r'class\s+(\w+)'
+            r'(?:\s+extends\s+\w+)?'
+            r'(?:\s+implements\s+[\w,\s]+)?'
+            r'\s*\{',
+        )
+        inner_positions = []
+        for m in inner_pattern.finditer(body):
+            inner_name = m.group(1)
+            if inner_name == class_name:
+                continue  # Skip the outer class itself
+            bstart = m.end()
             depth = 1
-            j = body_start
+            j = bstart
             while j < len(body) and depth > 0:
                 if body[j] == "{":
                     depth += 1
                 elif body[j] == "}":
                     depth -= 1
                 j += 1
-            method_body = body[body_start:j - 1]
+            inner_body = body[bstart:j - 1]
+            inner_positions.append((m.start(), j))
 
-            # Parser les paramètres
+            # Parse inner class recursively
+            ic_constants = {}
+            ic_methods = {}
+            ic_instance_fields = {}
+            ic_constructors = []
+            ic_inner = {}
+            self._parse_class_members(inner_body, ic_constants, ic_methods,
+                                      ic_instance_fields, ic_constructors,
+                                      ic_inner, inner_name)
+            inner_classes[inner_name] = ClassDef(
+                name=inner_name,
+                constants=ic_constants,
+                methods=ic_methods,
+                instance_fields=ic_instance_fields,
+                constructors=ic_constructors,
+                inner_classes=ic_inner,
+            )
+
+        # --- 2. Find methods and constructors ---
+        method_pattern = re.compile(
+            r'(?:(?:public|private|protected|global)\s+)?'
+            r'(?:(?:static|override|virtual|abstract)\s+)*'
+            r'(\w+(?:<[\w,\s]+>)?(?:\[\])?)\s+'  # return type
+            r'(\w+)\s*'  # method name
+            r'\(([^)]*)\)\s*\{',  # params
+            re.DOTALL
+        )
+
+        method_positions = []
+        for m in method_pattern.finditer(body):
+            # Skip if inside an inner class
+            in_inner = False
+            for istart, iend in inner_positions:
+                if istart <= m.start() <= iend:
+                    in_inner = True
+                    break
+            if in_inner:
+                continue
+
+            return_type = m.group(1)
+            method_name = m.group(2)
+            params_str = m.group(3)
+
+            if return_type == "class":
+                continue
+
+            # Extract method body
+            bstart = m.end()
+            depth = 1
+            j = bstart
+            while j < len(body) and depth > 0:
+                if body[j] == "{":
+                    depth += 1
+                elif body[j] == "}":
+                    depth -= 1
+                j += 1
+            method_body = body[bstart:j - 1]
+            method_positions.append((m.start(), j))
+
+            # Parse params
             params = []
             if params_str.strip():
                 for p in params_str.split(","):
@@ -121,53 +204,77 @@ class ApexParser:
                     if len(parts) == 2:
                         params.append((parts[0], parts[1]))
 
-            # Déterminer les modifiers
-            prefix = body[max(0, m.start() - 100):m.start()]
-            is_static = "static" in m.group(0) or "static" in prefix.split("\n")[-1]
+            # Detect static
+            prefix_line = body[max(0, m.start() - 150):m.start()].split("\n")[-1]
+            full_sig = prefix_line + m.group(0)
+            is_static = "static" in full_sig
 
             method_stmts = self._parse_block(method_body)
-            methods[method_name] = MethodDef(
-                name=method_name,
-                return_type=return_type,
-                params=params,
-                body=method_stmts,
-                is_static=is_static,
-            )
-            method_positions.append((m.start(), j))
 
-        # Trouver les constantes (lignes hors des méthodes)
-        # Pattern: [modifiers] Type name = value;
-        # Le `value` peut contenir des {} (Set/Map init), donc on ne peut pas juste regex
-        const_header = re.compile(
-            r'(?:public|private|protected|global)\s+'
-            r'(?:static\s+)?(?:final\s+)?'
+            # Constructor: method name == class name
+            if method_name == class_name:
+                constructors.append(MethodDef(
+                    name=method_name,
+                    return_type="void",
+                    params=params,
+                    body=method_stmts,
+                    is_static=False,
+                ))
+            else:
+                methods[method_name] = MethodDef(
+                    name=method_name,
+                    return_type=return_type,
+                    params=params,
+                    body=method_stmts,
+                    is_static=is_static,
+                )
+
+        # --- 3. Find fields (static constants and instance variables) ---
+        field_header = re.compile(
+            r'(?:(?:public|private|protected|global)\s+)'
+            r'((?:static\s+)?(?:final\s+)?)'
             r'([\w<>,\s]+?)\s+'
-            r'(\w+)\s*=\s*',
+            r'(\w+)\s*'
+            r'(?:=\s*|;)',
         )
-        for m in const_header.finditer(body):
-            # Vérifier qu'on n'est pas dans une méthode
-            in_method = False
-            for mstart, mend in method_positions:
-                if mstart <= m.start() <= mend:
-                    in_method = True
+        for m in field_header.finditer(body):
+            # Skip if inside a method or inner class
+            in_member = False
+            for ms, me in method_positions + inner_positions:
+                if ms <= m.start() <= me:
+                    in_member = True
                     break
-            if in_method:
+            if in_member:
                 continue
 
-            type_name = m.group(1).strip()
-            var_name = m.group(2)
+            modifiers = m.group(1).strip()
+            type_name = m.group(2).strip()
+            var_name = m.group(3)
+            is_static = "static" in modifiers
 
-            # Trouver la fin de la valeur (le ; en respectant {} et strings)
-            val_start = m.end()
-            value_str = self._extract_until_semi(body, val_start)
-            if value_str is None:
-                continue
-
-            try:
-                value_expr = self._parse_expr(value_str)
-                constants[var_name] = (type_name, value_expr)
-            except Exception:
-                pass
+            # Check if it has an initializer (=) or just declaration (;)
+            matched_end = m.group(0)
+            has_init = "=" in matched_end
+            if has_init:
+                val_start = m.end()
+                value_str = self._extract_until_semi(body, val_start)
+                if value_str is not None:
+                    try:
+                        value_expr = self._parse_expr(value_str)
+                        if is_static:
+                            constants[var_name] = (type_name, value_expr)
+                        else:
+                            instance_fields[var_name] = type_name
+                            constants[var_name] = (type_name, value_expr)
+                    except Exception:
+                        if not is_static:
+                            instance_fields[var_name] = type_name
+            else:
+                # Declaration without init
+                if is_static:
+                    pass  # Static without init — skip
+                else:
+                    instance_fields[var_name] = type_name
 
     def _extract_until_semi(self, source: str, start: int) -> Optional[str]:
         """Extrait le texte de start jusqu'au ; en respectant {}, () et strings."""
@@ -466,35 +573,17 @@ class ApexParser:
                 value=NewMap(key_type=k_type, value_type=v_type),
             )
 
-        # --- Type var = new SObject(...); ---
-        new_obj_match = re.match(
-            r'(\w+)\s+(\w+)\s*=\s*new\s+(\w+)\((.+?)\)\s*;?$',
+        # --- Type var = new Type(...); or Type var = new Type(); ---
+        # Delegate to _parse_expr which uses the token parser
+        new_match = re.match(
+            r'(\w+(?:<[\w,\s]+>)?)\s+(\w+)\s*=\s*(new\s+.+?)\s*;?$',
             stmt, re.DOTALL
         )
-        if new_obj_match:
-            fields = self._parse_constructor_args(new_obj_match.group(4))
+        if new_match and "new " in new_match.group(3):
             return VarDecl(
-                type_name=new_obj_match.group(1),
-                var_name=new_obj_match.group(2),
-                value=NewSObject(
-                    sobject_type=new_obj_match.group(3),
-                    fields=fields,
-                ),
-            )
-
-        # --- Type var = new SObject(); (empty constructor) ---
-        new_empty_match = re.match(
-            r'(\w+)\s+(\w+)\s*=\s*new\s+(\w+)\(\s*\)\s*;?$',
-            stmt
-        )
-        if new_empty_match:
-            return VarDecl(
-                type_name=new_empty_match.group(1),
-                var_name=new_empty_match.group(2),
-                value=NewSObject(
-                    sobject_type=new_empty_match.group(3),
-                    fields={},
-                ),
+                type_name=new_match.group(1),
+                var_name=new_match.group(2),
+                value=self._parse_expr(new_match.group(3)),
             )
 
         # --- Type var = expr; --- (supports Map<String, String>, List<Account>, String[], etc.)

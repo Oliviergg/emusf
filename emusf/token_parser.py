@@ -5,7 +5,7 @@ from __future__ import annotations
 from .lexer import Token, TokenType, LexerError
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
-    Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
+    Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject, NewInstance,
     MethodCall, ChainedCall, Ternary, NewList, NewMap, NewSet, NewMapInit,
     ArrayAccess, NewArray, CastExpr,
 )
@@ -262,11 +262,9 @@ def _parse_new(stream: TokenStream) -> Expr:
             stream.advance()
             return NewSObject(sobject_type=type_name, fields={})
         else:
-            # Regular constructor with args (exceptions etc.)
+            # Constructor with positional args: new ClassName(arg1, arg2)
             args = _parse_args(stream)
-            if args:
-                return NewSObject(sobject_type=type_name, fields={"message": args[0]})
-            return NewSObject(sobject_type=type_name, fields={})
+            return NewInstance(class_name=type_name, args=args)
 
     return NewSObject(sobject_type=type_name, fields={})
 

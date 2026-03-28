@@ -6,7 +6,7 @@ from .org import FakeOrg
 from .apex_parser import ApexParser
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
-    Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject,
+    Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject, NewInstance,
     MethodCall, ChainedCall, Ternary, NewList, NewMap, NewMapInit,
     ArrayAccess, NewArray, CastExpr,
     Stmt, VarDecl, Assign, FieldSet, SOQLAssign,
@@ -50,6 +50,7 @@ class ApexInterpreter:
         self.output = []
         self.classes = {}  # {class_name: ClassDef}
         self._current_class = None  # ClassDef en cours d'exécution
+        self._current_instance = None  # Instance en cours (pour this)
 
     def load_class(self, path_or_source: str, is_path: bool = True):
         """Charge une classe Apex dans l'interpréteur."""
@@ -101,6 +102,11 @@ class ApexInterpreter:
             self.variables[stmt.var_name] = self._eval(stmt.value)
 
         elif isinstance(stmt, FieldSet):
+            # this.field = value
+            if stmt.obj == "this" and self._current_instance is not None:
+                self._current_instance[stmt.field] = self._eval(stmt.value)
+                return
+
             obj = self.variables.get(stmt.obj)
             if isinstance(obj, list):
                 # Array index set: arr[i] = val
@@ -373,9 +379,15 @@ class ApexInterpreter:
             return None
 
         elif isinstance(expr, Variable):
+            if expr.name == "this":
+                return self._current_instance
             return self.variables.get(expr.name)
 
         elif isinstance(expr, FieldAccess):
+            # this.field
+            if expr.obj == "this" and self._current_instance is not None:
+                return self._current_instance.get(expr.field)
+
             # Constante de classe : ClassName.CONST
             class_key = "{}.{}".format(expr.obj, expr.field)
             if class_key in self.variables:
@@ -433,12 +445,14 @@ class ApexInterpreter:
             raise Exception("Opérateur inconnu: {}".format(expr.op))
 
         elif isinstance(expr, NewSObject):
-            # Special types
+            # Special system types
             if expr.sobject_type in ("HttpRequest", "Http", "HttpResponse"):
                 obj = {"_type": expr.sobject_type}
                 for field, val_expr in expr.fields.items():
                     obj[field] = self._eval(val_expr)
                 return obj
+
+            # SObject with named fields
             record = {"_sobject_type": expr.sobject_type}
             for field, val_expr in expr.fields.items():
                 record[field] = self._eval(val_expr)
@@ -453,6 +467,26 @@ class ApexInterpreter:
         elif isinstance(expr, NewMapInit):
             return {self._eval(k): self._eval(v) for k, v in expr.entries}
 
+        elif isinstance(expr, NewInstance):
+            args = [self._eval(a) for a in expr.args]
+            class_def = self._resolve_class(expr.class_name)
+            if class_def is not None:
+                instance = {
+                    "_type": class_def.name,
+                    "_class": class_def,
+                }
+                for field_name in class_def.instance_fields:
+                    instance[field_name] = None
+                constructor = self._find_constructor(class_def, len(args))
+                if constructor:
+                    self._run_constructor(instance, class_def, constructor, args)
+                return instance
+            # Fallback: exception or unknown class
+            obj = {"_sobject_type": expr.class_name}
+            if args:
+                obj["message"] = args[0]
+            return obj
+
         elif isinstance(expr, NewSet):
             return set(self._eval(v) for v in expr.init_values)
 
@@ -465,12 +499,20 @@ class ApexInterpreter:
         elif isinstance(expr, ChainedCall):
             target = self._eval(expr.target)
             args = [self._eval(a) for a in expr.args]
-            # Field access on dict when no args (e.g., account.Name after get(0))
+
+            # Instance method call
+            if isinstance(target, dict) and "_class" in target:
+                cls = target["_class"]
+                if expr.method in cls.methods:
+                    return self._invoke_instance_method(target, cls.methods[expr.method], args)
+                # Field access on instance
+                if expr.method in target:
+                    return target[expr.method]
+
+            # Field access on dict when no args
             if not args and isinstance(target, dict) and expr.method in target:
                 return target[expr.method]
-            # Also check if it's a list (subquery result accessed as field)
             if not args and isinstance(target, dict) and expr.method not in target:
-                # Could be a relationship field — check lowercase
                 for k, v in target.items():
                     if k.lower() == expr.method.lower():
                         return v
@@ -524,8 +566,17 @@ class ApexInterpreter:
         if isinstance(obj, (list, set)):
             return self._call_on_value(obj, method, args)
 
+        # Instance method call (obj has _class) — BEFORE typed dict check
+        if isinstance(obj, dict) and "_class" in obj:
+            cls = obj["_class"]
+            if method in cls.methods:
+                return self._invoke_instance_method(obj, cls.methods[method], args)
+            # Instance field access as method (e.g., getter)
+            if method in obj:
+                return obj[method]
+
         # All typed dicts (Pattern, Matcher, Date, HttpRequest, HttpResponse, etc.)
-        if isinstance(obj, dict) and "_type" in obj:
+        if isinstance(obj, dict) and "_type" in obj and "_class" not in obj:
             return self._call_map_method(obj, method, args)
 
         # Special typed objects (fallback check) (Pattern, Matcher, Date, etc.)
@@ -556,6 +607,16 @@ class ApexInterpreter:
         # String methods — delegate to _call_string_method
         elif isinstance(obj, str):
             return self._call_string_method(obj, method, args)
+
+        # Instance method call (obj has _class)
+        elif isinstance(obj, dict) and "_class" in obj:
+            cls = obj["_class"]
+            if method in cls.methods:
+                return self._invoke_instance_method(obj, cls.methods[method], args)
+            # Field access
+            val = obj.get(method)
+            if val is not None:
+                return val
 
         # SObject field access via method (e.getMessage() etc.)
         elif isinstance(obj, dict):
@@ -896,6 +957,157 @@ class ApexInterpreter:
         if method in methods:
             return methods[method]()
         raise Exception("Map.{}() non supporté".format(method))
+
+    def _resolve_class(self, name: str):
+        """Résout un nom de classe (direct, inner, ou qualifié)."""
+        # Direct match
+        if name in self.classes:
+            return self.classes[name]
+
+        # Inner class: check current class
+        if self._current_class and name in self._current_class.inner_classes:
+            return self._current_class.inner_classes[name]
+
+        # Qualified name: OuterClass.InnerClass
+        if "." in name:
+            parts = name.split(".", 1)
+            outer = self.classes.get(parts[0])
+            if outer and parts[1] in outer.inner_classes:
+                return outer.inner_classes[parts[1]]
+
+        # Check all loaded classes for inner class
+        for cls in self.classes.values():
+            if name in cls.inner_classes:
+                return cls.inner_classes[name]
+
+        return None
+
+    def _instantiate_class(self, class_def, new_expr):
+        """Crée une instance d'une classe."""
+        instance = {
+            "_type": class_def.name,
+            "_class": class_def,
+        }
+
+        # Initialize instance fields with defaults
+        for field_name, field_type in class_def.instance_fields.items():
+            instance[field_name] = None
+
+        # If new_expr has fields (SObject-style: new Cls(field = val)), set them
+        if new_expr.fields:
+            # Check if it's named fields or positional args
+            first_key = next(iter(new_expr.fields.keys()), None)
+            if first_key == "message":
+                # Exception-style: new Exception('msg')
+                args = [self._eval(v) for v in new_expr.fields.values()]
+            else:
+                # Named fields
+                for field, val_expr in new_expr.fields.items():
+                    instance[field] = self._eval(val_expr)
+                args = []
+        else:
+            args = []
+
+        # Run matching constructor
+        constructor = self._find_constructor(class_def, len(args))
+        if constructor and args:
+            self._run_constructor(instance, class_def, constructor, args)
+        elif constructor and not args and constructor.params:
+            pass  # No args but constructor needs params → skip
+        elif constructor:
+            self._run_constructor(instance, class_def, constructor, args)
+
+        return instance
+
+    def _find_constructor(self, class_def, num_args: int):
+        """Trouve le constructeur qui matche le nombre d'args."""
+        for ctor in class_def.constructors:
+            if len(ctor.params) == num_args:
+                return ctor
+        # Fallback: any constructor
+        return class_def.constructors[0] if class_def.constructors else None
+
+    def _run_constructor(self, instance, class_def, constructor, args):
+        """Exécute un constructeur sur une instance."""
+        saved_instance = self._current_instance
+        saved_class = self._current_class
+        saved_vars = self.variables.copy()
+
+        self._current_instance = instance
+        self._current_class = class_def
+
+        new_scope = {}
+        # Copy class constants
+        for k, v in saved_vars.items():
+            if "." in k:
+                new_scope[k] = v
+        for name, (type_name, expr_val) in class_def.constants.items():
+            key = "{}.{}".format(class_def.name, name)
+            if key not in new_scope:
+                try:
+                    new_scope[key] = self._eval(expr_val)
+                except Exception:
+                    pass
+            new_scope[name] = new_scope.get(key)
+
+        # Inject params
+        for i, (ptype, pname) in enumerate(constructor.params):
+            new_scope[pname] = args[i] if i < len(args) else None
+
+        self.variables = new_scope
+
+        try:
+            for stmt in constructor.body:
+                self._exec_stmt(stmt)
+        except ReturnException:
+            pass
+
+        self.variables = saved_vars
+        self._current_instance = saved_instance
+        self._current_class = saved_class
+
+    def _invoke_instance_method(self, instance, method_def, args):
+        """Invoque une méthode d'instance sur un objet."""
+        class_def = instance.get("_class")
+        if not class_def:
+            return None
+
+        saved_instance = self._current_instance
+        saved_class = self._current_class
+        saved_vars = self.variables.copy()
+
+        self._current_instance = instance
+        self._current_class = class_def
+
+        new_scope = {}
+        for k, v in saved_vars.items():
+            if "." in k:
+                new_scope[k] = v
+        for name, (type_name, expr_val) in class_def.constants.items():
+            key = "{}.{}".format(class_def.name, name)
+            if key not in new_scope:
+                try:
+                    new_scope[key] = self._eval(expr_val)
+                except Exception:
+                    pass
+            new_scope[name] = new_scope.get(key)
+
+        for i, (ptype, pname) in enumerate(method_def.params):
+            new_scope[pname] = args[i] if i < len(args) else None
+
+        self.variables = new_scope
+
+        result = None
+        try:
+            for stmt in method_def.body:
+                self._exec_stmt(stmt)
+        except ReturnException as ret:
+            result = ret.value
+
+        self.variables = saved_vars
+        self._current_instance = saved_instance
+        self._current_class = saved_class
+        return result
 
     def _invoke_method(self, class_def, method_def, args):
         """Invoque une méthode avec un scope isolé (stack de variables)."""

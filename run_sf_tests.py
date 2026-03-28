@@ -180,7 +180,7 @@ def print_results(test_class, results):
 if __name__ == "__main__":
     parser = ApexParser()
 
-    prefixes = ["XPL", "ILG", "FuzzyWuzzy", "ParQueJob"]
+    prefixes = ["XPL", "ILG", "FuzzyWuzzy", "ParQueJob", "TestDataFactory", "MockHttp"]
     print(DIM + "Chargement des classes source..." + RESET)
     all_classes = load_all_source_classes(prefixes)
     print("  {} classes chargées".format(len(all_classes)))

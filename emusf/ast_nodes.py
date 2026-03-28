@@ -65,6 +65,13 @@ class NewSObject(Expr):
 
 
 @dataclass
+class NewInstance(Expr):
+    """new ClassName(arg1, arg2, ...) — constructor call"""
+    class_name: str
+    args: list  # list[Expr]
+
+
+@dataclass
 class MethodCall(Expr):
     """obj.method(args) ou Class.method(args)"""
     obj: str  # peut être un str ou une Expr pour le chaînage
@@ -304,6 +311,10 @@ class MethodDef:
 class ClassDef:
     """Définition d'une classe Apex."""
     name: str
-    constants: dict  # {name: (type, Expr)}
+    constants: dict  # {name: (type, Expr)}  — static fields
     methods: dict  # {name: MethodDef}
-    sharing: Optional[str] = None  # 'with sharing', 'without sharing'
+    sharing: Optional[str] = None
+    instance_fields: dict = field(default_factory=dict)  # {name: type}
+    constructors: list = field(default_factory=list)  # list[MethodDef]
+    inner_classes: dict = field(default_factory=dict)  # {name: ClassDef}
+    parent_class: Optional[str] = None  # extends
