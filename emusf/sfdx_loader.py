@@ -81,7 +81,7 @@ def load_sobject_meta(objects_dir: str, sobject_name: str) -> dict:
     return result
 
 
-def configure_pg_org(org, objects_dir: str, sobject_names: list):
+def configure_pg_org(org, objects_dir: str, sobject_names: list, verbose: bool = False):
     """
     Configure une PgOrg avec les métadonnées SFDX.
     Enregistre les relations (lookups) dans le schema registry.
@@ -109,12 +109,13 @@ def configure_pg_org(org, objects_dir: str, sobject_names: list):
         if active_rules:
             all_validation_rules[name] = active_rules
 
-        field_count = len(meta["fields"])
-        lookup_count = len(meta["lookups"])
-        vr_count = len(active_rules)
-        print("SFDX: {} — {} champs, {} lookups, {} validation rules".format(
-            name, field_count, lookup_count, vr_count
-        ))
+        if verbose:
+            field_count = len(meta["fields"])
+            lookup_count = len(meta["lookups"])
+            vr_count = len(active_rules)
+            print("SFDX: {} — {} champs, {} lookups, {} validation rules".format(
+                name, field_count, lookup_count, vr_count
+            ))
 
     return all_validation_rules
 

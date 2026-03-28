@@ -36,11 +36,19 @@ class PgTestOrg(PgOrg):
 
     def truncate_all(self):
         """Vide toutes les tables du schema test."""
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
         cur = self.conn.cursor()
         for table in self._tables:
-            cur.execute("TRUNCATE {}.{} CASCADE".format(self.schema_name, table))
+            try:
+                cur.execute("TRUNCATE {}.{} CASCADE".format(self.schema_name, table))
+            except Exception:
+                self.conn.rollback()
         self.conn.commit()
         cur.close()
+        self._id_counters = {}
 
     # --- DML ---
 
@@ -54,7 +62,17 @@ class PgTestOrg(PgOrg):
 
         cur = self.conn.cursor()
         for record in records:
-            pg_record = {sf_to_pg_column(k): v for k, v in record.items()}
+            pg_record = {sf_to_pg_column(k): v for k, v in record.items()
+                         if not k.startswith("_")}  # skip internal keys
+            # Filter to valid columns only
+            valid_cols = set(self.get_columns(sobject))
+            if valid_cols:
+                pg_record = {k: v for k, v in pg_record.items() if k in valid_cols}
+            if not pg_record:
+                continue
+            # Filter out non-serializable values
+            pg_record = {k: (str(v) if isinstance(v, (dict, list, set, bool)) else v)
+                         for k, v in pg_record.items()}
             columns = ", ".join(pg_record.keys())
             placeholders = ", ".join(["%s"] * len(pg_record))
             try:
@@ -64,21 +82,8 @@ class PgTestOrg(PgOrg):
                     ),
                     list(pg_record.values()),
                 )
-            except Exception as e:
-                # Colonne manquante — skip silencieusement les champs inconnus
+            except Exception:
                 self.conn.rollback()
-                # Retry avec seulement les colonnes qui existent
-                valid_cols = set(self.get_columns(sobject))
-                pg_record = {k: v for k, v in pg_record.items() if k in valid_cols}
-                if pg_record:
-                    columns = ", ".join(pg_record.keys())
-                    placeholders = ", ".join(["%s"] * len(pg_record))
-                    cur.execute(
-                        "INSERT INTO {}.{} ({}) VALUES ({})".format(
-                            self.schema_name, sobject.lower(), columns, placeholders
-                        ),
-                        list(pg_record.values()),
-                    )
         self.conn.commit()
         cur.close()
 
@@ -97,18 +102,24 @@ class PgTestOrg(PgOrg):
         for record in records:
             record_id = record.get("Id", record.get("id"))
             pg_record = {sf_to_pg_column(k): v for k, v in record.items()
-                         if k.lower() != "id"}
+                         if k.lower() != "id" and not k.startswith("_")}
             valid_cols = set(self.get_columns(sobject))
-            pg_record = {k: v for k, v in pg_record.items() if k in valid_cols}
+            if valid_cols:
+                pg_record = {k: v for k, v in pg_record.items() if k in valid_cols}
             if not pg_record:
                 continue
+            pg_record = {k: (str(v) if isinstance(v, (dict, list, set, bool)) else v)
+                         for k, v in pg_record.items()}
             set_clause = ", ".join("{} = %s".format(k) for k in pg_record.keys())
-            cur.execute(
-                "UPDATE {}.{} SET {} WHERE id = %s".format(
-                    self.schema_name, sobject.lower(), set_clause
-                ),
-                list(pg_record.values()) + [record_id],
-            )
+            try:
+                cur.execute(
+                    "UPDATE {}.{} SET {} WHERE id = %s".format(
+                        self.schema_name, sobject.lower(), set_clause
+                    ),
+                    list(pg_record.values()) + [record_id],
+                )
+            except Exception:
+                self.conn.rollback()
         self.conn.commit()
         cur.close()
 
