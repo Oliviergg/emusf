@@ -457,13 +457,7 @@ class ApexInterpreter:
                 class_def = self._resolve_class(expr.sobject_type)
                 if class_def and (class_def.constructors or class_def.instance_fields or
                                   any(not m.is_static for m in class_def.methods.values())):
-                    instance = {"_type": class_def.name, "_class": class_def}
-                    for fn in class_def.instance_fields:
-                        instance[fn] = None
-                    ctor = self._find_constructor(class_def, 0)
-                    if ctor:
-                        self._run_constructor(instance, class_def, ctor, [])
-                    return instance
+                    return self._create_instance(class_def, [])
 
             # SObject with named fields
             record = {"_sobject_type": expr.sobject_type}
@@ -484,15 +478,7 @@ class ApexInterpreter:
             args = [self._eval(a) for a in expr.args]
             class_def = self._resolve_class(expr.class_name)
             if class_def is not None:
-                instance = {
-                    "_type": class_def.name,
-                    "_class": class_def,
-                }
-                for field_name in class_def.instance_fields:
-                    instance[field_name] = None
-                constructor = self._find_constructor(class_def, len(args))
-                if constructor:
-                    self._run_constructor(instance, class_def, constructor, args)
+                instance = self._create_instance(class_def, args)
                 return instance
             # Fallback: exception or unknown class
             obj = {"_sobject_type": expr.class_name}
@@ -570,7 +556,7 @@ class ApexInterpreter:
         method = call.method
 
         # Null-safe: appeler une méthode sur null retourne null
-        if obj is None and call.obj not in self.classes and call.obj != "_self" and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits"):
+        if obj is None and call.obj not in self.classes and call.obj not in ("_self", "_super") and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits", "EventBus", "Type", "UUID"):
             # Vérifier aussi si c'est une méthode de la classe courante
             if not (self._current_class and call.method in self._current_class.methods):
                 return None
@@ -581,10 +567,14 @@ class ApexInterpreter:
 
         # Instance method call (obj has _class) — BEFORE typed dict check
         if isinstance(obj, dict) and "_class" in obj:
-            cls = obj["_class"]
-            if method in cls.methods:
-                return self._invoke_instance_method(obj, cls.methods[method], args)
-            # Instance field access as method (e.g., getter)
+            # Polymorphic: search in concrete class + parent chain
+            resolved = self._resolve_method_in_chain(obj["_class"], method)
+            if resolved:
+                if resolved.is_static:
+                    return self._invoke_method(obj["_class"], resolved, args)
+                else:
+                    return self._invoke_instance_method(obj, resolved, args)
+            # Instance field access
             if method in obj:
                 return obj[method]
 
@@ -637,15 +627,38 @@ class ApexInterpreter:
             if val is not None:
                 return val
 
+        # super(args) — appel du constructeur parent
+        if call.obj == "_super" and call.method == "_init":
+            if self._current_instance and "_class" in self._current_instance:
+                concrete = self._current_instance["_class"]
+                if concrete.parent_class:
+                    parent_cls = self.classes.get(concrete.parent_class)
+                    if parent_cls:
+                        ctor = self._find_constructor(parent_cls, len(args))
+                        if ctor:
+                            self._run_constructor(self._current_instance, parent_cls, ctor, args)
+            return None
+
         # Appel de méthode statique sur une classe chargée
         if call.obj in self.classes:
             return self.call_method(call.obj, method, args)
 
-        # Appel de méthode locale (_self) ou de la même classe (sans préfixe)
-        if call.obj == "_self" and self._current_class and method in self._current_class.methods:
-            return self._invoke_method(self._current_class, self._current_class.methods[method], args)
-        if self._current_class and method in self._current_class.methods:
-            return self._invoke_method(self._current_class, self._current_class.methods[method], args)
+        # Appel de méthode locale (_self) — polymorphisme via instance concrète
+        if call.obj == "_self" or (obj is None and self._current_class):
+            # Chercher d'abord dans la classe concrète de l'instance (polymorphisme)
+            if self._current_instance and "_class" in self._current_instance:
+                concrete_class = self._current_instance["_class"]
+                resolved = self._resolve_method_in_chain(concrete_class, method)
+                if resolved:
+                    if resolved.is_static:
+                        return self._invoke_method(concrete_class, resolved, args)
+                    else:
+                        return self._invoke_instance_method(self._current_instance, resolved, args)
+            # Fallback: chercher dans la classe courante + héritage
+            if self._current_class:
+                resolved = self._resolve_method_in_chain(self._current_class, method)
+                if resolved:
+                    return self._invoke_method(self._current_class, resolved, args)
 
         # String static methods
         if call.obj == "String":
@@ -971,6 +984,27 @@ class ApexInterpreter:
             return methods[method]()
         raise Exception("Map.{}() non supporté".format(method))
 
+    def _resolve_class_chain(self, class_def):
+        """Retourne la liste [class, parent, grandparent, ...] pour l'héritage."""
+        chain = [class_def]
+        visited = {class_def.name}
+        current = class_def
+        while current.parent_class and current.parent_class not in visited:
+            parent = self.classes.get(current.parent_class)
+            if parent is None:
+                break
+            chain.append(parent)
+            visited.add(parent.name)
+            current = parent
+        return chain
+
+    def _resolve_method_in_chain(self, class_def, method_name):
+        """Cherche une méthode en remontant la chaîne d'héritage."""
+        for cls in self._resolve_class_chain(class_def):
+            if method_name in cls.methods:
+                return cls.methods[method_name]
+        return None
+
     def _resolve_class(self, name: str):
         """Résout un nom de classe (direct, inner, ou qualifié)."""
         # Direct match
@@ -994,6 +1028,34 @@ class ApexInterpreter:
                 return cls.inner_classes[name]
 
         return None
+
+    def _create_instance(self, class_def, args):
+        """Crée une instance avec support de l'héritage."""
+        chain = self._resolve_class_chain(class_def)
+
+        instance = {
+            "_type": class_def.name,
+            "_class": class_def,
+            "_chain": chain,  # Pour résolution polymorphe
+        }
+
+        # Initialiser les champs d'instance de toute la chaîne (parent d'abord)
+        for cls in reversed(chain):
+            for field_name in cls.instance_fields:
+                if field_name not in instance:
+                    instance[field_name] = None
+
+        # Trouver et exécuter le constructeur
+        constructor = None
+        for cls in chain:
+            ctor = self._find_constructor(cls, len(args))
+            if ctor:
+                constructor = ctor
+                break
+        if constructor:
+            self._run_constructor(instance, class_def, constructor, args)
+
+        return instance
 
     def _instantiate_class(self, class_def, new_expr):
         """Crée une instance d'une classe."""

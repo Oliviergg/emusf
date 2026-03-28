@@ -35,14 +35,20 @@ class ApexParser:
         """Parse une classe Apex complète : constantes, méthodes, etc."""
         # Extraire le nom et le body de la classe
         class_match = re.search(
-            r'(?:public|private|global)\s+(?:with\s+sharing\s+|without\s+sharing\s+)?'
-            r'class\s+(\w+)(?:\s+extends\s+\w+)?\s*\{',
+            r'(?:public|private|global)\s+'
+            r'(?:with\s+sharing\s+|without\s+sharing\s+)?'
+            r'(?:virtual\s+|abstract\s+)?'
+            r'class\s+(\w+)'
+            r'(?:\s+extends\s+(\w+))?'
+            r'(?:\s+implements\s+[\w,\s]+)?'
+            r'\s*\{',
             source
         )
         if not class_match:
             raise Exception("Classe non trouvée dans le source")
 
         class_name = class_match.group(1)
+        parent_class_name = class_match.group(2)  # From extends
         sharing = None
         if "with sharing" in source[:class_match.start() + 50]:
             sharing = "with sharing"
@@ -70,12 +76,6 @@ class ApexParser:
                                   instance_fields, constructors, inner_classes,
                                   class_name)
 
-        # Extraire parent class
-        parent_class = None
-        extends_match = re.search(r'\bextends\s+(\w+)', source[:start])
-        if extends_match:
-            parent_class = extends_match.group(1)
-
         return ClassDef(
             name=class_name,
             constants=constants,
@@ -84,7 +84,7 @@ class ApexParser:
             instance_fields=instance_fields,
             constructors=constructors,
             inner_classes=inner_classes,
-            parent_class=parent_class,
+            parent_class=parent_class_name,
         )
 
     def _parse_class_members(self, body: str, constants: dict, methods: dict,
@@ -426,6 +426,13 @@ class ApexParser:
         try_match = re.match(r'try\s*\{', stmt)
         if try_match:
             return self._parse_try_catch(stmt)
+
+        # --- super(args); ---
+        super_match = re.match(r'super\((.*)?\)\s*;?$', stmt)
+        if super_match:
+            args_str = super_match.group(1) or ""
+            args = self._parse_call_args(args_str) if args_str.strip() else []
+            return MethodCallStmt(call=MethodCall(obj="_super", method="_init", args=args))
 
         # --- break; ---
         if stmt.rstrip(";").strip() == "break":
