@@ -115,8 +115,29 @@ def parse_soql(soql: str, context: Optional[dict] = None) -> SOQLQuery:
 
         def resolve_bind(match):
             var_name = match.group(1)
-            value = context.get(var_name)
-            return "'{}'".format(value) if isinstance(value, str) else str(value)
+            if var_name not in context:
+                return "NULL"
+            value = context[var_name]
+            if value is None:
+                return "NULL"
+            if isinstance(value, str):
+                return "'{}'".format(value.replace("'", "''"))
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            if isinstance(value, (int, float)):
+                return str(value)
+            if isinstance(value, dict):
+                # Date dict → 'YYYY-MM-DD'
+                if value.get("_type") == "Date":
+                    return "'{}-{:02d}-{:02d}'".format(value["year"], value["month"], value["day"])
+                # SObject with Id
+                if "Id" in value or "id" in value:
+                    return "'{}'".format(value.get("Id", value.get("id", "")))
+            if isinstance(value, (list, set)):
+                # IN clause: convert to ('val1', 'val2')
+                vals = ", ".join("'{}'".format(v) for v in value)
+                return "({})".format(vals) if vals else "('')"
+            return "'{}'".format(str(value))
 
         where_clause = re.sub(r":(\w+)", resolve_bind, where_clause)
 

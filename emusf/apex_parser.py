@@ -158,7 +158,7 @@ class ApexParser:
         method_pattern = re.compile(
             r'(?:(?:public|private|protected|global)\s+)?'
             r'(?:(?:static|override|virtual|abstract)\s+)*'
-            r'(\w+(?:<[\w,\s]+>)?(?:\[\])?)\s+'  # return type
+            r'(\w+(?:<[\w.,\s]+>)?(?:\[\])?)\s+'  # return type (supports Ns.Type in generics)
             r'(\w+)\s*'  # method name
             r'\(([^)]*)\)\s*\{',  # params
             re.DOTALL
@@ -195,14 +195,8 @@ class ApexParser:
             method_body = body[bstart:j - 1]
             method_positions.append((m.start(), j))
 
-            # Parse params
-            params = []
-            if params_str.strip():
-                for p in params_str.split(","):
-                    p = p.strip()
-                    parts = p.rsplit(None, 1)
-                    if len(parts) == 2:
-                        params.append((parts[0], parts[1]))
+            # Parse params (respects < > for generics)
+            params = self._parse_method_params(params_str)
 
             # Detect static
             prefix_line = body[max(0, m.start() - 150):m.start()].split("\n")[-1]
@@ -611,6 +605,37 @@ class ApexParser:
             )
 
         return None
+
+    def _parse_method_params(self, params_str: str) -> list:
+        """Parse method parameters, respecting <> in generic types."""
+        params = []
+        if not params_str.strip():
+            return params
+        # Split by comma, respecting angle brackets
+        parts = []
+        current = ""
+        depth = 0
+        for ch in params_str:
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append(current.strip())
+                current = ""
+                continue
+            current += ch
+        if current.strip():
+            parts.append(current.strip())
+
+        for p in parts:
+            p = p.strip()
+            # Remove final keyword
+            p = p.replace("final ", "")
+            tokens = p.rsplit(None, 1)
+            if len(tokens) == 2:
+                params.append((tokens[0], tokens[1]))
+        return params
 
     def _parse_for(self, stmt: str):
         """Parse for-each ou for C-style."""

@@ -401,10 +401,10 @@ class ApexInterpreter:
                 return self.variables[class_key]
             obj = self.variables.get(expr.obj)
             if isinstance(obj, dict):
-                return obj.get(expr.field, "null")
+                return obj.get(expr.field)
             if isinstance(obj, list):
-                return "null"
-            return "null"
+                return None
+            return None
 
         elif isinstance(expr, UnaryOp):
             val = self._eval(expr.operand)
