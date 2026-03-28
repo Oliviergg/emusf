@@ -27,8 +27,18 @@ DSN = "host=localhost port=6000 user=postgres password=dcc948df3501919f709cb976f
 
 
 class SfTestInterpreter(ApexTestInterpreter):
+    def __init__(self, org):
+        super().__init__(org)
+        from emusf.queue import SyncJobQueue
+        self.job_queue = SyncJobQueue()
+
     def _exec_method_call(self, call):
-        if call.obj == "Test" and call.method in ("startTest", "stopTest", "setMock"):
+        if call.obj == "Test" and call.method == "startTest":
+            return None
+        if call.obj == "Test" and call.method == "stopTest":
+            self.job_queue.flush(self)  # Execute all queued jobs
+            return None
+        if call.obj == "Test" and call.method == "setMock":
             return None
         return super()._exec_method_call(call)
 
@@ -180,7 +190,11 @@ def print_results(test_class, results):
 if __name__ == "__main__":
     parser = ApexParser()
 
-    prefixes = ["XPL", "ILG", "FuzzyWuzzy", "ParQueJob", "TestDataFactory", "MockHttp"]
+    prefixes = [
+        "XPL", "ILG", "FuzzyWuzzy",
+        "ParQueJob", "ParallelQueueableJob", "QueueableJob", "QueueManager",
+        "TestDataFactory", "MockHttp",
+    ]
     print(DIM + "Chargement des classes source..." + RESET)
     all_classes = load_all_source_classes(prefixes)
     print("  {} classes chargées".format(len(all_classes)))
@@ -193,7 +207,7 @@ if __name__ == "__main__":
         name = fname[:-4]
         if not re.search(r'test', name, re.IGNORECASE):
             continue
-        if not any(name.startswith(p) for p in ["XPL", "ILG", "FuzzyWuzzy"]):
+        if not any(name.startswith(p) for p in ["XPL", "ILG", "FuzzyWuzzy", "ParQueJob"]):
             continue
         if test_pattern and test_pattern not in name:
             continue

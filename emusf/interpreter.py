@@ -388,6 +388,13 @@ class ApexInterpreter:
             if expr.obj == "this" and self._current_instance is not None:
                 return self._current_instance.get(expr.field)
 
+            # System.Label → return empty string for custom labels
+            if expr.obj == "System" and expr.field == "Label":
+                return {"_type": "SystemLabel"}
+            # ParentJobResult.SUCCESS / FAILURE
+            if expr.obj == "ParentJobResult":
+                return expr.field
+
             # Constante de classe : ClassName.CONST
             class_key = "{}.{}".format(expr.obj, expr.field)
             if class_key in self.variables:
@@ -731,6 +738,18 @@ class ApexInterpreter:
                 self.output.append(str(val))
                 print("DEBUG: {}".format(val))
                 return None
+            elif method == "enqueueJob":
+                # Queueable pattern
+                instance = args[0] if args else None
+                if self.job_queue and isinstance(instance, dict) and "_class" in instance:
+                    job_id = self.job_queue.enqueue(instance)
+                    return job_id
+                return None
+            elif method == "attachFinalizer":
+                return None  # No-op
+            elif method == "currentTimeMillis":
+                import time
+                return int(time.time() * 1000)
             elif method == "today":
                 import datetime
                 d = datetime.date.today()
@@ -739,6 +758,26 @@ class ApexInterpreter:
                 import datetime
                 d = datetime.datetime.now()
                 return {"_type": "DateTime", "year": d.year, "month": d.month, "day": d.day}
+            elif method == "abortJob":
+                return None  # No-op
+
+        # System.Label.XXX — custom labels (return empty string)
+        if call.obj == "System" and method == "Label":
+            return ""
+
+        # EventBus.publish — platform events (no-op)
+        if call.obj == "EventBus" and method == "publish":
+            return None
+
+        # Type.forName — reflection
+        if call.obj == "Type" and method == "forName":
+            class_name = args[0] if args else None
+            return {"_type": "ApexType", "className": class_name}
+
+        # UUID.randomUUID()
+        if call.obj == "UUID" and method == "randomUUID":
+            import uuid
+            return str(uuid.uuid4())
 
         # Http.send() — mock (also check when obj is the Http dict)
         if call.obj == "Http":
@@ -895,6 +934,32 @@ class ApexInterpreter:
                 match = m["_compiled"].fullmatch(m["_text"])
                 m["_match"] = match
                 return match is not None
+
+        # SystemLabel — System.Label.XXX returns ''
+        if m.get("_type") == "SystemLabel":
+            return ""  # All custom labels return empty string
+
+        # ApexType — Type.forName().newInstance()
+        if m.get("_type") == "ApexType":
+            if method == "newInstance":
+                class_name = m.get("className")
+                if class_name:
+                    class_def = self._resolve_class(class_name)
+                    if class_def:
+                        return self._create_instance(class_def, [])
+                return None
+
+        # FinalizerContext
+        if m.get("_type") == "FinalizerContext":
+            if method == "getAsyncApexJobId":
+                return m.get("asyncApexJobId")
+            if method == "getResult":
+                return m.get("result")
+
+        # QueueableContext
+        if m.get("_type") == "QueueableContext":
+            if method == "getJobId":
+                return m.get("jobId")
 
         # Http mock
         if m.get("_type") == "Http":
