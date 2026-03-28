@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Tous les objets{% endblock %}
+
+{% block content %}
+<div class="slds-page-header slds-m-bottom_medium">
+    <div class="slds-page-header__row">
+        <div class="slds-page-header__col-title">
+            <h1 class="slds-page-header__title">Objets Salesforce</h1>
+            <p class="slds-text-body_small slds-text-color_weak">{{ tables | length }} tables disponibles en PostgreSQL</p>
+        </div>
+    </div>
+</div>
+
+<div class="slds-card">
+    <table class="slds-table slds-table_cell-buffer slds-table_bordered slds-table_striped">
+        <thead>
+            <tr class="slds-line-height_reset">
+                <th scope="col"><div class="slds-truncate">Objet</div></th>
+                <th scope="col"><div class="slds-truncate">Colonnes</div></th>
+                <th scope="col"><div class="slds-truncate">Layout</div></th>
+                <th scope="col"><div class="slds-truncate">Actions</div></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for t in tables %}
+            <tr>
+                <td>
+                    <a href="/sobject/{{ t.name }}">
+                        <strong>{{ t.name }}</strong>
+                    </a>
+                </td>
+                <td>{{ t.col_count }}</td>
+                <td>
+                    {% if t.has_layout %}
+                        <span class="slds-badge slds-theme_success">Layout</span>
+                    {% else %}
+                        <span class="slds-text-color_weak">—</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <a href="/sobject/{{ t.name }}" class="slds-button slds-button_neutral slds-button_small">Liste</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

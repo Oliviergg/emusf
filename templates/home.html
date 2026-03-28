@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Accueil{% endblock %}
+
+{% block content %}
+<div style="text-align:center; padding:2rem 0 1rem;">
+    <h1 style="font-size:1.5rem; font-weight:700; color:#080707;">Salesforce Viewer</h1>
+    <p style="font-size:0.875rem; color:#706e6b; margin-top:0.25rem;">
+        Visualisation des objets Salesforce &mdash; PostgreSQL + Page Layouts SFDX
+    </p>
+</div>
+
+<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:0.75rem; max-width:900px; margin:0 auto;">
+    {% for sobj, conf in sobject_config.items() %}
+    {% set icon_parts = conf.icon.split(':') %}
+    {% set icon_class = sobj.lower() if sobj.lower() in ['account','contract','contact','opportunity'] else 'default' %}
+    <a href="/{{ sobj.lower() }}" style="text-decoration:none;">
+        <div class="sf-section" style="padding:1.25rem; transition: box-shadow 0.15s; cursor:pointer;" onmouseover="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.12)'" onmouseout="this.style.boxShadow='none'">
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+                <div class="sf-record-icon {{ icon_class }}">
+                    {{ slds_icon(icon_parts[0], icon_parts[1], '', 'slds-icon') }}
+                </div>
+                <div>
+                    <div style="font-size:1rem; font-weight:700; color:#080707;">{{ conf.label }}s</div>
+                    <div style="font-size:0.75rem; color:#706e6b;">Parcourir les {{ conf.label|lower }}s</div>
+                </div>
+            </div>
+        </div>
+    </a>
+    {% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Modifier {{ record_name }} — {{ config.label }}{% endblock %}
+
+{% block extra_head %}
+<style>
+    .sf-edit-field {
+        padding: var(--sp-2) var(--sp-3);
+        min-height: 3.5rem;
+    }
+    .sf-edit-field label {
+        font-size: 0.75rem; color: var(--slds-neutral-30); font-weight: 400;
+        margin-bottom: 2px; display: block; line-height: 1.25;
+    }
+    .sf-edit-field input,
+    .sf-edit-field textarea,
+    .sf-edit-field select {
+        width: 100%; font-size: 0.8125rem;
+        border: 1px solid var(--slds-neutral-80); border-radius: var(--radius-s);
+        padding: var(--sp-2); color: var(--slds-neutral-10);
+        background: var(--slds-neutral-100); outline: none;
+        transition: border-color 0.15s, box-shadow 0.15s;
+        line-height: 1.5;
+    }
+    .sf-edit-field input:focus,
+    .sf-edit-field textarea:focus,
+    .sf-edit-field select:focus {
+        border-color: var(--slds-brand-50);
+        box-shadow: 0 0 0 1px var(--slds-brand-40);
+    }
+    .sf-edit-field input[readonly],
+    .sf-edit-field textarea[readonly] {
+        background: var(--slds-neutral-95); color: var(--slds-neutral-50); cursor: not-allowed;
+        border-color: var(--slds-neutral-90);
+    }
+    .sf-edit-field textarea { min-height: 60px; resize: vertical; }
+    .sf-edit-actions {
+        display: flex; gap: var(--sp-2); justify-content: flex-end;
+        padding: var(--sp-3) var(--sp-4); background: var(--slds-neutral-100);
+        border: 1px solid var(--slds-neutral-90); border-radius: var(--radius-s);
+        margin-bottom: var(--sp-3);
+        position: sticky; top: 3rem; z-index: 50;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% set icon_parts = config.icon.split(':') %}
+{% set icon_class = sobject.lower() if sobject.lower() in ['account','contract','contact','opportunity'] else 'default' %}
+
+{# === Header === #}
+<div class="sf-record-header" style="margin-bottom:0;">
+    <div class="sf-record-icon {{ icon_class }}">
+        {{ slds_icon(icon_parts[0], icon_parts[1], '', 'slds-icon') }}
+    </div>
+    <div style="flex:1;">
+        <div class="sf-record-subtitle">Modifier {{ config.label }}</div>
+        <div class="sf-record-title">{{ record_name }}</div>
+    </div>
+</div>
+
+{# === Form === #}
+<form method="POST" action="/save/{{ sobject }}/{{ record_id }}">
+    {# Sticky action bar #}
+    <div class="sf-edit-actions">
+        {% set cancel_url = '/' + sobject.lower() + '/' + record_id if sobject in sobject_config else '/sobject/' + sobject + '/' + record_id %}
+        <a href="{{ cancel_url }}" class="slds-button slds-button_neutral">Annuler</a>
+        <button type="submit" class="slds-button slds-button_brand">
+            {{ slds_icon('utility', 'save', 'x-small') }}
+            Enregistrer
+        </button>
+    </div>
+
+    {# === Sections === #}
+    {% for section in layout.sections %}
+    <div class="sf-section" id="edit-section-{{ loop.index }}">
+        {% if section.detail_heading %}
+        <div class="sf-section-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <svg class="chevron" viewBox="0 0 16 16"><path d="M4.7 3.3a1 1 0 011.4 0L11 8.2a1 1 0 010 1.4L6.1 14.5a1 1 0 01-1.4-1.4L9.2 8.9 4.7 4.7a1 1 0 010-1.4z"/></svg>
+            {{ section.label }}
+        </div>
+        {% endif %}
+        <div class="sf-section-body">
+            {% set col_count = section.columns|length %}
+            {% if section.style == 'OneColumn' %}
+                {% for col in section.columns %}
+                {% for item in col.items %}
+                {% if item.field and not item.empty_space %}
+                    {{ render_edit_field(item, field_labels, record) }}
+                {% endif %}
+                {% endfor %}
+                {% endfor %}
+            {% else %}
+                <div class="sf-section-grid">
+                    {% for col in section.columns %}
+                    <div>
+                        {% for item in col.items %}
+                        {% if item.empty_space %}
+                            <div class="sf-edit-field">&nbsp;</div>
+                        {% elif item.field %}
+                            {{ render_edit_field(item, field_labels, record) }}
+                        {% endif %}
+                        {% endfor %}
+                    </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    {# Bottom save bar #}
+    <div class="sf-edit-actions" style="position:static; margin-top:0.75rem;">
+        <a href="{{ cancel_url }}" class="slds-button slds-button_neutral">Annuler</a>
+        <button type="submit" class="slds-button slds-button_brand">
+            {{ slds_icon('utility', 'save', 'x-small') }}
+            Enregistrer
+        </button>
+    </div>
+</form>
+{% endblock %}
+
+{% macro render_edit_field(item, field_labels, record) %}
+    {% set fmeta = field_labels.get(item.field, {}) %}
+    {% set label = fmeta.get('label', item.field) %}
+    {% set ftype = fmeta.get('type', 'Text') %}
+    {% set val = record.get(item.field) or record.get(item.field.lower()) %}
+    {% set is_readonly = (item.behavior == 'Readonly') %}
+    {% set is_required = (item.behavior == 'Required') %}
+    {% set field_name = item.field %}
+
+    <div class="sf-edit-field">
+        <label for="field-{{ field_name }}">
+            {% if is_required %}<span class="badge-required"></span>{% endif %}
+            {{ label }}
+        </label>
+        {% if is_readonly %}
+            <input type="text" id="field-{{ field_name }}" value="{{ val if val is not none else '' }}" readonly>
+        {% elif ftype in ('TextArea', 'LongTextArea', 'Html', 'RichTextArea') %}
+            <textarea id="field-{{ field_name }}" name="{{ field_name }}" {% if is_required %}required{% endif %}>{{ val if val is not none else '' }}</textarea>
+        {% elif ftype == 'Checkbox' %}
+            <div style="padding-top:0.25rem;">
+                <input type="hidden" name="{{ field_name }}" value="false">
+                <label class="slds-checkbox">
+                    <input type="checkbox" name="{{ field_name }}" value="true" {% if val %}checked{% endif %}>
+                    <span class="slds-checkbox_faux"></span>
+                </label>
+            </div>
+        {% elif ftype == 'Date' %}
+            <input type="date" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val.strftime('%Y-%m-%d') if val else '' }}" {% if is_required %}required{% endif %}>
+        {% elif ftype == 'DateTime' %}
+            <input type="datetime-local" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val.strftime('%Y-%m-%dT%H:%M') if val else '' }}" {% if is_required %}required{% endif %}>
+        {% elif ftype in ('Number', 'Currency', 'Percent') %}
+            <input type="number" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val if val is not none else '' }}" step="any" {% if is_required %}required{% endif %}>
+        {% elif ftype == 'Phone' %}
+            <input type="tel" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val if val is not none else '' }}" {% if is_required %}required{% endif %}>
+        {% elif ftype == 'Email' %}
+            <input type="email" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val if val is not none else '' }}" {% if is_required %}required{% endif %}>
+        {% elif ftype == 'Url' %}
+            <input type="url" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val if val is not none else '' }}" {% if is_required %}required{% endif %}>
+        {% else %}
+            <input type="text" id="field-{{ field_name }}" name="{{ field_name }}" value="{{ val if val is not none else '' }}" {% if is_required %}required{% endif %}>
+        {% endif %}
+    </div>
+{% endmacro %}
