@@ -1,7 +1,7 @@
 """Execute un scénario Apex cohérent depuis un répertoire.
 
-Charge toutes les classes (.cls) et triggers (.trigger) du répertoire,
-puis exécute le point d'entrée (Main.cls par défaut).
+Charge toutes les classes (.cls), triggers (.trigger) et flows (.flow-meta.xml)
+du répertoire, puis exécute le point d'entrée (Main.cls par défaut).
 
 Usage:
     python run_scenario.py <répertoire> [fichier_principal] [méthode]
@@ -21,6 +21,7 @@ from emusf.config import DSN, SFDX_OBJECTS, SF_CLASSES
 from emusf.apex_parser import ApexParser
 from emusf.test_runner import ApexTestInterpreter
 from emusf.trigger_parser import load_trigger
+from emusf.flow_interpreter import load_and_register_flow
 
 # Couleurs
 GREEN = "\033[32m"
@@ -119,6 +120,16 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
     # --- 3. Charger les triggers (.trigger) avec accès aux classes ---
     for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.trigger"), recursive=True)):
         load_trigger(org, path, classes=classes)
+
+    # --- 3b. Charger les flows (.flow-meta.xml) ---
+    for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.flow-meta.xml"), recursive=True)):
+        try:
+            flow_def = load_and_register_flow(org, path)
+            print("  {}FLOW{} {}".format(DIM, RESET, flow_def.api_name))
+        except Exception as e:
+            print("  {}WARN: impossible de charger flow {}: {}{}".format(
+                RED, os.path.basename(path), e, RESET
+            ))
 
     # --- 4. Préparer l'interpréteur avec toutes les classes ---
     interp = ApexTestInterpreter(org)

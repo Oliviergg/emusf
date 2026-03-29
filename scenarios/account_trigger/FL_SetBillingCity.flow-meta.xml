@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>58.0</apiVersion>
+    <label>FL_SetBillingCity</label>
+    <processType>AutoLaunchedFlow</processType>
+    <status>Active</status>
+
+    <start>
+        <connector>
+            <targetReference>Check_City</targetReference>
+        </connector>
+        <object>Account</object>
+        <recordTriggerType>Update</recordTriggerType>
+        <triggerType>RecordBeforeSave</triggerType>
+    </start>
+
+    <decisions>
+        <name>Check_City</name>
+        <label>Check BillingCity</label>
+        <defaultConnector>
+            <targetReference>Set_City</targetReference>
+        </defaultConnector>
+        <rules>
+            <name>Already_Set</name>
+            <label>Already Set</label>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.BillingCity</leftValueReference>
+                <operator>IsNull</operator>
+                <rightValue>
+                    <booleanValue>false</booleanValue>
+                </rightValue>
+            </conditions>
+        </rules>
+    </decisions>
+
+    <assignments>
+        <name>Set_City</name>
+        <label>Set BillingCity</label>
+        <assignmentItems>
+            <assignToReference>$Record.BillingCity</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Paris</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+</Flow>
