@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>58.0</apiVersion>
+    <label>FL_updateDate</label>
+    <processType>AutoLaunchedFlow</processType>
+    <status>Active</status>
+
+    <start>
+        <connector>
+            <targetReference>Set_Date</targetReference>
+        </connector>
+        <object>Account</object>
+        <recordTriggerType>CreateAndUpdate</recordTriggerType>
+        <triggerType>RecordBeforeSave</triggerType>
+    </start>
+
+    <formulas>
+        <name>fml_Now</name>
+        <dataType>DateTime</dataType>
+        <expression>NOW()</expression>
+    </formulas>
+
+    <assignments>
+        <name>Set_Date</name>
+        <label>Set Date</label>
+        <assignmentItems>
+            <assignToReference>$Record.LastModifiedDate__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <elementReference>fml_Now</elementReference>
+            </value>
+        </assignmentItems>
+        <connector>
+            <targetReference>Set_Description</targetReference>
+        </connector>
+    </assignments>
+
+    <assignments>
+        <name>Set_Description</name>
+        <label>Set Description</label>
+        <assignmentItems>
+            <assignToReference>$Record.Description</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Updated by flow</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+</Flow>

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Flow xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>58.0</apiVersion>
+    <label>FL_setStatus</label>
+    <processType>AutoLaunchedFlow</processType>
+    <status>Active</status>
+
+    <start>
+        <connector>
+            <targetReference>Check_Amount</targetReference>
+        </connector>
+        <object>Opportunity</object>
+        <recordTriggerType>CreateAndUpdate</recordTriggerType>
+        <triggerType>RecordBeforeSave</triggerType>
+    </start>
+
+    <decisions>
+        <name>Check_Amount</name>
+        <label>Check Amount</label>
+        <rules>
+            <name>High_Value</name>
+            <label>High Value</label>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.Amount</leftValueReference>
+                <operator>GreaterThanOrEqualTo</operator>
+                <rightValue>
+                    <numberValue>100000</numberValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Set_Priority_High</targetReference>
+            </connector>
+        </rules>
+        <rules>
+            <name>Medium_Value</name>
+            <label>Medium Value</label>
+            <conditionLogic>and</conditionLogic>
+            <conditions>
+                <leftValueReference>$Record.Amount</leftValueReference>
+                <operator>GreaterThanOrEqualTo</operator>
+                <rightValue>
+                    <numberValue>10000</numberValue>
+                </rightValue>
+            </conditions>
+            <connector>
+                <targetReference>Set_Priority_Medium</targetReference>
+            </connector>
+        </rules>
+        <defaultConnector>
+            <targetReference>Set_Priority_Low</targetReference>
+        </defaultConnector>
+    </decisions>
+
+    <assignments>
+        <name>Set_Priority_High</name>
+        <label>Set Priority High</label>
+        <assignmentItems>
+            <assignToReference>$Record.Priority__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>High</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+
+    <assignments>
+        <name>Set_Priority_Medium</name>
+        <label>Set Priority Medium</label>
+        <assignmentItems>
+            <assignToReference>$Record.Priority__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Medium</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+
+    <assignments>
+        <name>Set_Priority_Low</name>
+        <label>Set Priority Low</label>
+        <assignmentItems>
+            <assignToReference>$Record.Priority__c</assignToReference>
+            <operator>Assign</operator>
+            <value>
+                <stringValue>Low</stringValue>
+            </value>
+        </assignmentItems>
+    </assignments>
+</Flow>
