@@ -73,10 +73,12 @@ class ApexParser:
         inner_classes = {}
         properties = {}
         overloads = {}
+        static_init = []
 
         self._parse_class_members(class_body, constants, methods,
                                   instance_fields, constructors, inner_classes,
-                                  class_name, properties, overloads)
+                                  class_name, properties, overloads,
+                                  static_init)
 
         return ClassDef(
             name=class_name,
@@ -89,13 +91,15 @@ class ApexParser:
             inner_classes=inner_classes,
             parent_class=parent_class_name,
             overloads=overloads,
+            static_init=static_init,
         )
 
     def _parse_class_members(self, body: str, constants: dict, methods: dict,
                              instance_fields: dict, constructors: list,
                              inner_classes: dict, class_name: str,
                              properties: dict | None = None,
-                             overloads: dict | None = None):
+                             overloads: dict | None = None,
+                             static_init: list | None = None):
         """Parse les membres d'une classe."""
         # Strip single-line comments (but not inside strings)
         cleaned_lines = []
@@ -238,6 +242,40 @@ class ApexParser:
                     overloads[method_name].append(new_method)
                 methods[method_name] = new_method
 
+        # --- 2b. Find static initializer blocks positions (before fields) ---
+        static_block_positions = []
+        static_block_pat = re.compile(r'\bstatic\s*\{')
+        for m in static_block_pat.finditer(body):
+            in_member = False
+            for ms, me in method_positions + inner_positions:
+                if ms <= m.start() < me:
+                    in_member = True
+                    break
+            if in_member:
+                continue
+            prefix = body[max(0, m.start() - 80):m.start()].strip()
+            if prefix and not prefix.endswith((';', '}', '{', '\n', '')):
+                last_word = prefix.split()[-1] if prefix.split() else ''
+                if last_word and last_word not in (';', '}', '{'):
+                    continue
+            bstart = m.end()
+            depth = 1
+            j = bstart
+            while j < len(body) and depth > 0:
+                if body[j] == '{':
+                    depth += 1
+                elif body[j] == '}':
+                    depth -= 1
+                j += 1
+            static_block_positions.append((m.start(), j))
+            if static_init is not None:
+                block_body = body[bstart:j - 1]
+                try:
+                    stmts = self._parse_block(block_body)
+                    static_init.extend(stmts)
+                except Exception:
+                    pass
+
         # --- 3. Find fields (static constants and instance variables) ---
         field_header = re.compile(
             r'(?:(?:public|private|protected|global)\s+)?'
@@ -247,9 +285,9 @@ class ApexParser:
             r'(?:=\s*|;)',
         )
         for m in field_header.finditer(body):
-            # Skip if inside a method or inner class
+            # Skip if inside a method, inner class, or static initializer block
             in_member = False
-            for ms, me in method_positions + inner_positions:
+            for ms, me in method_positions + inner_positions + static_block_positions:
                 if ms <= m.start() < me:
                     in_member = True
                     break
@@ -307,6 +345,7 @@ class ApexParser:
                 type_name = m.group(1).strip()
                 prop_name = m.group(2)
                 properties[prop_name] = type_name
+
 
     def _extract_until_semi(self, source: str, start: int) -> Optional[str]:
         """Extrait le texte de start jusqu'au ; en respectant {}, () et strings."""
@@ -377,6 +416,7 @@ class ApexParser:
         """Découpe un bloc en statements bruts (gère les { }, strings et else/catch)."""
         statements = []
         depth = 0
+        paren_depth = 0
         current = ""
         in_string = False
         i = 0
@@ -395,6 +435,10 @@ class ApexParser:
             else:
                 if char == "'":
                     in_string = True
+                elif char == "(":
+                    paren_depth += 1
+                elif char == ")":
+                    paren_depth -= 1
                 elif char == "{":
                     depth += 1
                 elif char == "}":
@@ -406,7 +450,7 @@ class ApexParser:
                         else:
                             statements.append(current.strip())
                             current = ""
-                elif char == ";" and depth == 0:
+                elif char == ";" and depth == 0 and paren_depth == 0:
                     statements.append(current.strip())
                     current = ""
 
@@ -419,6 +463,10 @@ class ApexParser:
 
     def _parse_statement(self, stmt: str) -> Optional[Stmt]:
         """Parse un statement brut en nœud AST."""
+        # Normaliser les newlines en espaces pour les statements simples (sans blocs)
+        # sauf pour ceux qui contiennent des blocs { }
+        if "\n" in stmt and "{" not in stmt:
+            stmt = " ".join(stmt.split())
 
         # --- for (...) { body } ---
         for_start = re.match(r'for\s*\(', stmt)
@@ -981,6 +1029,18 @@ class ApexParser:
         expr_str = expr_str.strip()
         if not expr_str:
             return NullLiteral()
+        # Pré-traitement: Type<Generic>.class → 'Type<Generic>' (type literal)
+        expr_str = re.sub(
+            r'(\w+<[\w,\s.]+>)\.class\b',
+            lambda m: "'" + m.group(1) + "'",
+            expr_str,
+        )
+        # Simple: Type.class → 'Type'
+        expr_str = re.sub(
+            r'(\w+)\.class\b',
+            lambda m: "'" + m.group(1) + "'",
+            expr_str,
+        )
         try:
             tokens = Lexer(expr_str).tokenize()
             stream = TokenStream(tokens)

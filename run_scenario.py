@@ -118,6 +118,22 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
         configure_pg_org(org, SFDX_OBJECTS, sfdx_objects)
         print("  {}SFDX{} métadonnées chargées".format(DIM, RESET))
 
+    # --- 2b. Seed data depuis le schema data ---
+    seed_path = os.path.join(scenario_dir, ".seed_tables")
+    if os.path.exists(seed_path):
+        with open(seed_path) as f:
+            tables = [line.strip() for line in f if line.strip()]
+        cur = org.conn.cursor()
+        for table in tables:
+            try:
+                cur.execute("INSERT INTO test.{t} SELECT * FROM data.{t}".format(t=table.lower()))
+                org.conn.commit()
+                print("  {}SEED{} {} copiée depuis data".format(DIM, RESET, table))
+            except Exception as e:
+                org.conn.rollback()
+                print("  {}WARN: seed {} échoué: {}{}".format(RED, table, e, RESET))
+        cur.close()
+
     # --- 3. Charger les triggers (.trigger) avec accès aux classes ---
     for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.trigger"), recursive=True)):
         load_trigger(org, path, classes=classes)
@@ -149,6 +165,32 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
                 interp.variables["{}.{}".format(name, cname)] = interp._eval(expr)
             except Exception:
                 pass
+
+    # --- 4b. Exécuter Setup.cls si présent (avant les static init) ---
+    setup_cls = classes.get("Setup")
+    if setup_cls:
+        setup_method = setup_cls.methods.get("run")
+        if setup_method:
+            print("  {}SETUP{} Setup.run()".format(DIM, RESET))
+            try:
+                interp._invoke_method(setup_cls, setup_method, [])
+            except Exception as e:
+                print("  {}WARN: Setup.run() échoué: {}{}".format(RED, e, RESET))
+
+    # Exécuter les blocs static { ... } après le chargement de toutes les classes
+    for name, cls in classes.items():
+        if cls.static_init:
+            prev_class = interp._current_class
+            interp._current_class = cls
+            try:
+                for stmt in cls.static_init:
+                    interp._exec_stmt(stmt)
+            except Exception as e:
+                print("  {}WARN: static init {} échoué: {}{}".format(
+                    RED, name, e, RESET
+                ))
+            finally:
+                interp._current_class = prev_class
 
     # --- 5. Exécuter le point d'entrée ---
     print("\n{}--- Exécution: {}.{}() ---{}\n".format(BOLD, entry_class.name, method, RESET))

@@ -147,6 +147,11 @@ def _parse_postfix(stream: TokenStream) -> Expr:
     while True:
         if stream.match(TokenType.DOT):
             member = stream.expect(TokenType.IDENT).value
+            # Type.class → type literal (used as argument to JSON.deserialize etc.)
+            if member == "class":
+                if isinstance(expr, Variable):
+                    return StringLiteral(value=expr.name)
+                return StringLiteral(value=str(expr))
             if stream.match(TokenType.LPAREN):
                 # Method call
                 args = _parse_args(stream)
@@ -293,6 +298,11 @@ def _parse_new(stream: TokenStream) -> Expr:
 def _parse_new_collection(stream: TokenStream, collection_type: str) -> Expr:
     """Parse new List<T>(), new Set<T>{...}, new Map<K,V>()"""
     elem_type = stream.expect(TokenType.IDENT).value
+    # Handle qualified types: OuterClass.InnerClass
+    while stream.at(TokenType.DOT) and stream.peek(1).type == TokenType.IDENT:
+        elem_type += "." + stream.peek(1).value
+        stream.advance()  # consume .
+        stream.advance()  # consume InnerName
 
     if collection_type == "Map":
         stream.expect(TokenType.COMMA)

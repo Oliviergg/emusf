@@ -459,7 +459,14 @@ class ApexInterpreter:
                 return self.variables[class_key]
             obj = self.variables.get(expr.obj)
             if isinstance(obj, dict):
-                return obj.get(expr.field)
+                val = obj.get(expr.field)
+                if val is None and expr.field not in obj:
+                    # Fallback case-insensitive (PG stocke en minuscules)
+                    key_lower = expr.field.lower()
+                    for k in obj:
+                        if k.lower() == key_lower:
+                            return obj[k]
+                return val
             if isinstance(obj, list):
                 return None
             return None
@@ -621,6 +628,13 @@ class ApexInterpreter:
             target = self._eval(expr.target)
             args = [self._eval(a) for a in expr.args]
 
+            # System.JSON.method() — résoudre comme JSON.method()
+            if target is None and isinstance(expr.target, FieldAccess):
+                fa = expr.target
+                if fa.obj == "System" and fa.field == "JSON":
+                    call = MethodCall(obj="JSON", method=expr.method, args=expr.args)
+                    return self._exec_method_call(call)
+
             # Instance method call
             if isinstance(target, dict) and "_class" in target:
                 cls = target["_class"]
@@ -704,7 +718,7 @@ class ApexInterpreter:
         method = call.method
 
         # Null-safe: appeler une méthode sur null retourne null
-        if obj is None and call.obj not in self.classes and call.obj not in ("_self", "_super") and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits", "EventBus", "Type", "UUID"):
+        if obj is None and call.obj not in self.classes and call.obj not in ("_self", "_super") and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits", "EventBus", "Type", "UUID") and not call.obj.endswith("__c"):
             # Vérifier aussi si c'est une méthode de la classe courante
             if not (self._current_class and call.method in self._current_class.methods):
                 return None
@@ -828,6 +842,13 @@ class ApexInterpreter:
         if call.obj in self.classes:
             return self.call_method(call.obj, method, args)
 
+        # Inner class: si call.obj est une inner class de la classe courante,
+        # chercher la méthode dans la classe outer
+        if self._current_class and call.obj in self._current_class.inner_classes:
+            resolved = self._resolve_method_in_chain(self._current_class, method, args)
+            if resolved:
+                return self._invoke_method(self._current_class, resolved, args)
+
         # Appel de méthode locale (_self) — polymorphisme via instance concrète
         if call.obj == "_self" or (obj is None and self._current_class):
             # Chercher d'abord dans la classe concrète de l'instance (polymorphisme)
@@ -895,8 +916,8 @@ class ApexInterpreter:
                 return _json.dumps(args[0], indent=2, default=_default) if args else "null"
             elif method == "deserialize":
                 if len(args) >= 2 and isinstance(args[0], str):
-                    return _json.loads(args[0])
-                return _json.loads(args[0]) if args else None
+                    return self._json_convert_dates(_json.loads(args[0]))
+                return self._json_convert_dates(_json.loads(args[0])) if args else None
             elif method == "deserializeUntyped":
                 return _json.loads(args[0]) if args and isinstance(args[0], str) else None
 
@@ -995,11 +1016,14 @@ class ApexInterpreter:
                         if isinstance(r, dict) and "_sobject_type" in r:
                             sobject = r["_sobject_type"]
                             data = {k: v for k, v in r.items() if k != "_sobject_type"}
-                            if method == "insert":
-                                result = self.org.insert(sobject, [data])
-                                r["Id"] = result.record_ids[0]
-                            else:
-                                self.org.update(sobject, [data])
+                            try:
+                                if method == "insert":
+                                    result = self.org.insert(sobject, [data])
+                                    r["Id"] = result.record_ids[0]
+                                else:
+                                    self.org.update(sobject, [data])
+                            except Exception:
+                                pass  # Partial success mode
                     # Return list of SaveResult
                     return [{"_type": "SaveResult", "success": True, "id": r.get("Id")} for r in records]
                 elif isinstance(records, dict) and "_sobject_type" in records:
@@ -1021,7 +1045,7 @@ class ApexInterpreter:
                 return self.org.execute_soql("[{}]".format(soql), context=self.variables)
 
         # Blob static methods
-        if call.obj == "Blob":
+        if call.obj in ("Blob", "blob"):
             if method == "valueOf":
                 return args[0] if args else ""
 
@@ -1030,6 +1054,8 @@ class ApexInterpreter:
             if method == "base64Encode":
                 import base64
                 val = args[0] if args else ""
+                if isinstance(val, (bytes, bytearray)):
+                    return base64.b64encode(val).decode()
                 if isinstance(val, str):
                     return base64.b64encode(val.encode()).decode()
                 return ""
@@ -1161,6 +1187,28 @@ class ApexInterpreter:
         # System.schedule
         if call.obj == "System" and method == "schedule":
             return "FakeJobId_001"
+
+        # Custom Settings: SomeObject__c.getInstance('name')
+        if call.obj.endswith("__c") and method == "getInstance":
+            sobject = call.obj
+            name = args[0] if args else "default"
+            try:
+                import psycopg2.extras
+                cur = self.org.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute(
+                    "SELECT * FROM {}.{} WHERE name = %s LIMIT 1".format(
+                        self.org.schema_name, sobject.lower()),
+                    [name],
+                )
+                row = cur.fetchone()
+                cur.close()
+                if row:
+                    result = {"_sobject_type": sobject}
+                    result.update(row)
+                    return result
+            except Exception:
+                pass
+            return {"_sobject_type": sobject}
 
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))
 
@@ -1636,13 +1684,62 @@ class ApexInterpreter:
         self._current_instance = saved_instance
         self._current_class = saved_class
 
+    @staticmethod
+    def _json_convert_dates(obj):
+        """Convertit les strings ISO datetime en dicts DateTime Apex."""
+        import re as _re
+        iso_pat = _re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}')
+
+        def _convert(val):
+            if isinstance(val, str) and iso_pat.match(val):
+                try:
+                    parts = val.split("T")
+                    date_parts = parts[0].split("-")
+                    return {
+                        "_type": "DateTime",
+                        "year": int(date_parts[0]),
+                        "month": int(date_parts[1]),
+                        "day": int(date_parts[2]),
+                    }
+                except (ValueError, IndexError):
+                    return val
+            if isinstance(val, dict):
+                return {k: _convert(v) for k, v in val.items()}
+            if isinstance(val, list):
+                return [_convert(v) for v in val]
+            return val
+
+        return _convert(obj)
+
     def _http_send(self, request):
-        """Exécute Http.send() — délègue au mock si Test.setMock a été appelé."""
+        """Exécute Http.send() — délègue au mock si Test.setMock a été appelé,
+        sinon fait un vrai appel HTTP."""
         if self._http_mock and isinstance(self._http_mock, dict) and "_class" in self._http_mock:
             respond = self._resolve_method_in_chain(self._http_mock["_class"], "respond")
             if respond:
                 return self._invoke_instance_method(self._http_mock, respond, [request])
-        return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}", "_headers": {}}
+        # Vrai appel HTTP
+        import requests
+        endpoint = request.get("_endpoint", "")
+        method = (request.get("_method", "GET") or "GET").upper()
+        body = request.get("_body", "")
+        headers = dict(request.get("_headers", {}) or {})
+        timeout = request.get("_timeout")
+        timeout_s = (timeout / 1000.0) if timeout else 30
+        try:
+            resp = requests.request(
+                method=method, url=endpoint, headers=headers,
+                data=body if body else None, timeout=timeout_s,
+            )
+            return {
+                "_type": "HttpResponse",
+                "_statusCode": resp.status_code,
+                "_body": resp.text,
+                "_headers": dict(resp.headers),
+            }
+        except Exception as e:
+            print("HTTP callout failed: {}".format(e))
+            return {"_type": "HttpResponse", "_statusCode": 500, "_body": str(e), "_headers": {}}
 
     def _invoke_instance_method(self, instance, method_def, args):
         """Invoque une méthode d'instance sur un objet."""
@@ -1705,7 +1802,10 @@ class ApexInterpreter:
         for name, (type_name, expr) in class_def.constants.items():
             key = "{}.{}".format(class_def.name, name)
             if key not in new_scope:
-                new_scope[key] = self._eval(expr) if expr is not None else None
+                if expr is not None:
+                    new_scope[key] = self._eval(expr)
+                else:
+                    new_scope[key] = None
             new_scope[name] = new_scope[key]
 
         # Injecter les paramètres
