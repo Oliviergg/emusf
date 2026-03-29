@@ -320,3 +320,4 @@ class ClassDef:
     constructors: list = field(default_factory=list)  # list[MethodDef]
     inner_classes: dict = field(default_factory=dict)  # {name: ClassDef}
     parent_class: Optional[str] = None  # extends
+    overloads: dict = field(default_factory=dict)  # {name: list[MethodDef]}

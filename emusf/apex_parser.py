@@ -72,10 +72,11 @@ class ApexParser:
         constructors = []
         inner_classes = {}
         properties = {}
+        overloads = {}
 
         self._parse_class_members(class_body, constants, methods,
                                   instance_fields, constructors, inner_classes,
-                                  class_name, properties)
+                                  class_name, properties, overloads)
 
         return ClassDef(
             name=class_name,
@@ -87,12 +88,14 @@ class ApexParser:
             constructors=constructors,
             inner_classes=inner_classes,
             parent_class=parent_class_name,
+            overloads=overloads,
         )
 
     def _parse_class_members(self, body: str, constants: dict, methods: dict,
                              instance_fields: dict, constructors: list,
                              inner_classes: dict, class_name: str,
-                             properties: dict | None = None):
+                             properties: dict | None = None,
+                             overloads: dict | None = None):
         """Parse les membres d'une classe."""
         # Strip single-line comments (but not inside strings)
         cleaned_lines = []
@@ -218,13 +221,20 @@ class ApexParser:
                     is_static=False,
                 ))
             else:
-                methods[method_name] = MethodDef(
+                new_method = MethodDef(
                     name=method_name,
                     return_type=return_type,
                     params=params,
                     body=method_stmts,
                     is_static=is_static,
                 )
+                if method_name in methods and overloads is not None:
+                    # Surcharge : stocker toutes les variantes
+                    existing = methods[method_name]
+                    if method_name not in overloads:
+                        overloads[method_name] = [existing]
+                    overloads[method_name].append(new_method)
+                methods[method_name] = new_method
 
         # --- 3. Find fields (static constants and instance variables) ---
         field_header = re.compile(

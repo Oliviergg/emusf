@@ -72,10 +72,39 @@ class ApexInterpreter:
         class_def = self.classes.get(class_name)
         if not class_def:
             raise Exception("Classe '{}' non chargée".format(class_name))
-        method = class_def.methods.get(method_name)
+        method = self._resolve_overload(class_def, method_name, args)
         if not method:
             raise Exception("Méthode '{}.{}' non trouvée".format(class_name, method_name))
         return self._invoke_method(class_def, method, args)
+
+    @staticmethod
+    def _resolve_overload(class_def, method_name: str, args: list):
+        """Résout une surcharge de méthode par nombre et type d'arguments."""
+        candidates = getattr(class_def, 'overloads', {}).get(method_name)
+        if candidates:
+            # Filtrer par nombre de params
+            matching = [m for m in candidates if len(m.params) == len(args)]
+            if len(matching) == 1:
+                return matching[0]
+            if len(matching) > 1:
+                # Discriminer par type du premier argument
+                for m in matching:
+                    param_type = m.params[0][0].lower() if m.params else ""
+                    arg = args[0] if args else None
+                    if isinstance(arg, dict) and "map" in param_type:
+                        return m
+                    if isinstance(arg, list) and "list" in param_type:
+                        return m
+                    if isinstance(arg, set) and "set" in param_type:
+                        return m
+                    if isinstance(arg, str) and param_type in ("string", "id"):
+                        return m
+                    if isinstance(arg, (int, float)) and param_type in ("integer", "int", "decimal", "double", "long"):
+                        return m
+                # Pas de match par type, retourner le premier
+                return matching[0]
+        # Pas de surcharge, version par défaut
+        return class_def.methods.get(method_name)
 
     def execute_file(self, path: str, method: str = "run"):
         """Charge un .cls, parse en AST, puis exécute."""
@@ -673,7 +702,7 @@ class ApexInterpreter:
         # Instance method call (obj has _class) — BEFORE typed dict check
         if isinstance(obj, dict) and "_class" in obj:
             # Polymorphic: search in concrete class + parent chain
-            resolved = self._resolve_method_in_chain(obj["_class"], method)
+            resolved = self._resolve_method_in_chain(obj["_class"], method, args)
             if resolved:
                 if resolved.is_static:
                     return self._invoke_method(obj["_class"], resolved, args)
@@ -769,7 +798,7 @@ class ApexInterpreter:
             # Chercher d'abord dans la classe concrète de l'instance (polymorphisme)
             if self._current_instance and "_class" in self._current_instance:
                 concrete_class = self._current_instance["_class"]
-                resolved = self._resolve_method_in_chain(concrete_class, method)
+                resolved = self._resolve_method_in_chain(concrete_class, method, args)
                 if resolved:
                     if resolved.is_static:
                         return self._invoke_method(concrete_class, resolved, args)
@@ -777,7 +806,7 @@ class ApexInterpreter:
                         return self._invoke_instance_method(self._current_instance, resolved, args)
             # Fallback: chercher dans la classe courante + héritage
             if self._current_class:
-                resolved = self._resolve_method_in_chain(self._current_class, method)
+                resolved = self._resolve_method_in_chain(self._current_class, method, args)
                 if resolved:
                     return self._invoke_method(self._current_class, resolved, args)
 
@@ -1090,6 +1119,7 @@ class ApexInterpreter:
             "escapeSingleQuotes": lambda: s.replace("'", "\\'"),
             "normalizeSpace": lambda: " ".join(s.split()),
             "countMatches": lambda: s.count(args[0]) if args else 0,
+            "size": lambda: len(s),
         }
         if method in methods:
             return methods[method]()
@@ -1333,9 +1363,13 @@ class ApexInterpreter:
             current = parent
         return chain
 
-    def _resolve_method_in_chain(self, class_def, method_name):
+    def _resolve_method_in_chain(self, class_def, method_name, args=None):
         """Cherche une méthode en remontant la chaîne d'héritage."""
         for cls in self._resolve_class_chain(class_def):
+            if args is not None and hasattr(cls, 'overloads') and method_name in cls.overloads:
+                resolved = self._resolve_overload(cls, method_name, args)
+                if resolved:
+                    return resolved
             if method_name in cls.methods:
                 return cls.methods[method_name]
         return None

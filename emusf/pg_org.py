@@ -66,7 +66,7 @@ class PgOrg:
         """Exécute une requête SOQL contre PostgreSQL."""
         if context is None:
             context = {}
-        cq = compile_soql(soql, context, schema=self.schema_name)
+        cq = compile_soql(soql, context, schema=self.schema_name, sf_schema=self.sf_schema)
         return self._execute(cq)
 
     def _execute(self, cq: CompiledQuery) -> list:
@@ -88,13 +88,25 @@ class PgOrg:
         field_map = {}
         for sf_name in cq.fields:
             field_map[sf_name.lower()] = sf_name
+        # Ajouter les alias de champs relationnels
+        for pg_alias, sf_name in cq.field_aliases.items():
+            field_map[pg_alias] = sf_name
 
         rows = []
         for raw in raw_rows:
             row = {"_sobject_type": cq.sobject}
             for pg_col, val in raw.items():
                 sf_field = field_map.get(pg_col, pg_col)
-                row[sf_field] = val
+                # Champs relationnels (__r) : imbriquer dans un sous-dict
+                if "." in sf_field and ("__r." in sf_field or sf_field[0].isupper()):
+                    parts = sf_field.split(".", 1)
+                    rel_name = parts[0]
+                    child_field = parts[1]
+                    if rel_name not in row:
+                        row[rel_name] = {}
+                    row[rel_name][child_field] = val
+                else:
+                    row[sf_field] = val
             rows.append(row)
 
         # Sous-requêtes enfant
