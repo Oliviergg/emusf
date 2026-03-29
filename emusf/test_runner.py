@@ -31,8 +31,8 @@ class AssertionError(Exception):
 class ApexTestInterpreter(ApexInterpreter):
     """Interpréteur étendu avec support de System.assert / System.assertEquals."""
 
-    def __init__(self, org):
-        super().__init__(org)
+    def __init__(self, org, named_credentials=None):
+        super().__init__(org, named_credentials=named_credentials)
         self.assertions_passed = 0
         self.assertions_failed = 0
         self.failures = []

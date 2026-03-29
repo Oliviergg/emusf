@@ -22,6 +22,7 @@ from emusf.apex_parser import ApexParser
 from emusf.test_runner import ApexTestInterpreter
 from emusf.trigger_parser import load_trigger
 from emusf.flow_interpreter import load_and_register_flow
+from emusf.callout import load_named_credentials
 
 # Couleurs
 GREEN = "\033[32m"
@@ -131,8 +132,16 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
                 RED, os.path.basename(path), e, RESET
             ))
 
+    # --- 3c. Charger les Named Credentials (credentials.yaml) ---
+    named_credentials = {}
+    cred_path = os.path.join(scenario_dir, "credentials.yaml")
+    if os.path.exists(cred_path):
+        named_credentials = load_named_credentials(cred_path)
+        print("  {}CRED{} {} named credentials chargées".format(
+            DIM, RESET, len(named_credentials)))
+
     # --- 4. Préparer l'interpréteur avec toutes les classes ---
-    interp = ApexTestInterpreter(org)
+    interp = ApexTestInterpreter(org, named_credentials=named_credentials)
     for name, cls in classes.items():
         interp.classes[name] = cls
         for cname, (ctype, expr) in cls.constants.items():

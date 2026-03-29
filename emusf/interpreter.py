@@ -42,7 +42,7 @@ class ApexInterpreter:
     Le parsing est délégué à ApexParser.
     """
 
-    def __init__(self, org):
+    def __init__(self, org, named_credentials=None):
         self.org = org
         self.parser = ApexParser()
         self.variables = {}
@@ -50,6 +50,7 @@ class ApexInterpreter:
         self.classes = {}  # {class_name: ClassDef}
         self._current_class = None  # ClassDef en cours d'exécution
         self._current_instance = None  # Instance en cours (pour this)
+        self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
 
     def load_class(self, path_or_source: str, is_path: bool = True):
         """Charge une classe Apex dans l'interpréteur."""
@@ -937,9 +938,13 @@ class ApexInterpreter:
             import uuid
             return str(uuid.uuid4())
 
-        # Http.send() — mock (also check when obj is the Http dict)
+        # Http.send() — callout réel ou mock
         if call.obj == "Http":
             if method == "send":
+                req = args[0] if args else {}
+                if self.named_credentials and isinstance(req, dict):
+                    from .callout import execute_callout
+                    return execute_callout(req, self.named_credentials)
                 return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
                         "_headers": {}}
 
@@ -1226,9 +1231,13 @@ class ApexInterpreter:
             if method == "getJobId":
                 return m.get("jobId")
 
-        # Http mock
+        # Http — callout réel ou mock
         if m.get("_type") == "Http":
             if method == "send":
+                req = args[0] if args else {}
+                if self.named_credentials and isinstance(req, dict):
+                    from .callout import execute_callout
+                    return execute_callout(req, self.named_credentials)
                 return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
                         "_headers": {}}
 
