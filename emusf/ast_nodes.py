@@ -313,7 +313,8 @@ class ClassDef:
     name: str
     constants: dict  # {name: (type, Expr)}  — static fields
     methods: dict  # {name: MethodDef}
-    sharing: Optional[str] = None
+    properties: dict = field(default_factory=dict)  # {name: type_name}  — Apex {get;set;}
+    sharing: Optional[str] = None  # 'with sharing', 'without sharing'
     instance_fields: dict = field(default_factory=dict)  # {name: type}
     constructors: list = field(default_factory=list)  # list[MethodDef]
     inner_classes: dict = field(default_factory=dict)  # {name: ClassDef}

@@ -71,15 +71,17 @@ class ApexParser:
         instance_fields = {}
         constructors = []
         inner_classes = {}
+        properties = {}
 
         self._parse_class_members(class_body, constants, methods,
                                   instance_fields, constructors, inner_classes,
-                                  class_name)
+                                  class_name, properties)
 
         return ClassDef(
             name=class_name,
             constants=constants,
             methods=methods,
+            properties=properties,
             sharing=sharing,
             instance_fields=instance_fields,
             constructors=constructors,
@@ -89,7 +91,8 @@ class ApexParser:
 
     def _parse_class_members(self, body: str, constants: dict, methods: dict,
                              instance_fields: dict, constructors: list,
-                             inner_classes: dict, class_name: str):
+                             inner_classes: dict, class_name: str,
+                             properties: dict | None = None):
         """Parse les membres d'une classe."""
         # Strip single-line comments (but not inside strings)
         cleaned_lines = []
@@ -269,6 +272,26 @@ class ApexParser:
                     pass  # Static without init — skip
                 else:
                     instance_fields[var_name] = type_name
+
+        # Trouver les propriétés {get;set;} (hors des méthodes)
+        if properties is not None:
+            prop_pattern = re.compile(
+                r'(?:public|private|protected|global)\s+'
+                r'([\w<>,.\s]+?)\s+'
+                r'(\w+)\s*\{[^}]*get\s*;[^}]*set\s*;[^}]*\}',
+                re.IGNORECASE,
+            )
+            for m in prop_pattern.finditer(body):
+                in_member = False
+                for ms, me in method_positions + inner_positions:
+                    if ms <= m.start() <= me:
+                        in_member = True
+                        break
+                if in_member:
+                    continue
+                type_name = m.group(1).strip()
+                prop_name = m.group(2)
+                properties[prop_name] = type_name
 
     def _extract_until_semi(self, source: str, start: int) -> Optional[str]:
         """Extrait le texte de start jusqu'au ; en respectant {}, () et strings."""
