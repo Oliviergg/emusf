@@ -111,12 +111,17 @@ def run_test_class(test_class_name, all_classes, parser):
 
     results = {}
 
-    # Org PG partagée, truncate entre chaque test
+    # Org PG partagée
     org = PgTestOrg(DSN, schema="test")
 
-    # Charger les relations SFDX une fois
-    sfdx_objects = [d for d in os.listdir(SFDX_OBJECTS) if os.path.isdir(os.path.join(SFDX_OBJECTS, d))]
-    configure_pg_org(org, SFDX_OBJECTS, sfdx_objects)
+    # Charger les relations SFDX (cached globally)
+    if not hasattr(run_test_class, '_sfdx_loaded'):
+        sfdx_objects = [d for d in os.listdir(SFDX_OBJECTS) if os.path.isdir(os.path.join(SFDX_OBJECTS, d))]
+        configure_pg_org(org, SFDX_OBJECTS, sfdx_objects)
+        run_test_class._sfdx_loaded = True
+        run_test_class._sfdx_registry = org.sf_schema
+    else:
+        org.sf_schema = run_test_class._sfdx_registry
 
     for method_name in test_methods:
         org.truncate_all()
