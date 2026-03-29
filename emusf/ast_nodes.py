@@ -157,6 +157,7 @@ class SOQLAssign(Stmt):
     type_name: Optional[str]  # List<Account> ou None
     var_name: str
     soql: str  # la requête brute
+    is_list: bool = True  # True for List<X>, False for single SObject assignment
 
 
 @dataclass

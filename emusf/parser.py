@@ -80,10 +80,21 @@ def parse_soql(soql: str, context: Optional[dict] = None) -> SOQLQuery:
 
     soql = soql.strip().lstrip("[").rstrip("]").strip()
 
+    # Strip Salesforce-specific clauses not supported by PG
+    soql = re.sub(r'\bWITH\s+(?:SYSTEM_MODE|USER_MODE|SECURITY_ENFORCED)\b', '', soql, flags=re.IGNORECASE).strip()
+
+    # Handle SELECT COUNT() FROM ... — special aggregate
+    count_match = re.match(r'SELECT\s+COUNT\(\)\s+FROM\s+', soql, re.IGNORECASE)
+    is_count_query = count_match is not None
+
     # Trouver le FROM principal (hors parenthèses)
     from_pos = _find_top_level_from(soql)
     raw_select = soql[len("SELECT "):from_pos].strip()
-    fields, subqueries = extract_subqueries(raw_select)
+    if is_count_query:
+        fields = ["COUNT()"]
+        subqueries = {}
+    else:
+        fields, subqueries = extract_subqueries(raw_select)
 
     # Le reste après FROM
     after_from = soql[from_pos + 5:].strip()
@@ -115,21 +126,25 @@ def parse_soql(soql: str, context: Optional[dict] = None) -> SOQLQuery:
 
         def resolve_bind(match):
             path = match.group(1)
-            parts = path.split(".")
-            value = context.get(parts[0])
-            for part in parts[1:]:
-                if isinstance(value, dict):
-                    # Case-insensitive lookup
-                    found = value.get(part)
-                    if found is None:
-                        for k, v in value.items():
-                            if k.lower() == part.lower():
-                                found = v
-                                break
-                    value = found
-                else:
-                    value = None
-                    break
+            # Try full dotted path first (e.g., ClassName.CONSTANT)
+            if path in context:
+                value = context[path]
+            else:
+                parts = path.split(".")
+                value = context.get(parts[0])
+                for part in parts[1:]:
+                    if isinstance(value, dict):
+                        # Case-insensitive lookup
+                        found = value.get(part)
+                        if found is None:
+                            for k, v in value.items():
+                                if k.lower() == part.lower():
+                                    found = v
+                                    break
+                        value = found
+                    else:
+                        value = None
+                        break
             if value is None:
                 return "NULL"
             if isinstance(value, str):

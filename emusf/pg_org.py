@@ -93,17 +93,23 @@ class PgOrg:
         # Construire le mapping champ SF → colonne PG
         pg_table = "{}.{}".format(self.schema_name, sobject_name.lower())
 
+        # Handle COUNT() aggregate
+        is_count = query.fields == ["COUNT()"]
+
         # Les champs SOQL sont en CamelCase, PG en lowercase
         pg_fields = []
         sf_fields = query.fields if query.fields else ["*"]
         field_map = {}  # pg_col → sf_field
 
-        for f in sf_fields:
-            pg_col = sf_to_pg_column(f)
-            pg_fields.append(pg_col)
-            field_map[pg_col] = f
+        if is_count:
+            select_clause = "COUNT(*)"
+        else:
+            for f in sf_fields:
+                pg_col = sf_to_pg_column(f)
+                pg_fields.append(pg_col)
+                field_map[pg_col] = f
+            select_clause = ", ".join(pg_fields)
 
-        select_clause = ", ".join(pg_fields)
         sql = "SELECT {} FROM {}".format(select_clause, pg_table)
 
         # WHERE — convertir les noms de champs en lowercase
@@ -111,7 +117,7 @@ class PgOrg:
         if query.where:
             where_pg = self._convert_where(query.where, params)
             sql += " WHERE " + where_pg
-        if query.order_by:
+        if query.order_by and not is_count:
             sql += " ORDER BY " + query.order_by.lower()
         if query.limit:
             sql += " LIMIT {}".format(query.limit)
@@ -121,10 +127,15 @@ class PgOrg:
         raw_rows = cur.fetchall()
         cur.close()
 
+        # COUNT() returns a flat list of empty dicts (length = count)
+        if is_count:
+            count_val = raw_rows[0]["count"] if raw_rows else 0
+            return [{}] * count_val
+
         # Reconvertir les clés PG → noms SF
         rows = []
         for raw in raw_rows:
-            row = {}
+            row = {"_sobject_type": sobject_name}
             for pg_col, val in raw.items():
                 sf_field = field_map.get(pg_col, pg_col)
                 row[sf_field] = val

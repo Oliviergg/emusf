@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from .org import FakeOrg
 from .apex_parser import ApexParser
 from .ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
@@ -129,7 +128,15 @@ class ApexInterpreter:
 
         elif isinstance(stmt, SOQLAssign):
             results = self.org.execute_soql(stmt.soql, context=self.variables)
-            self.variables[stmt.var_name] = results
+            # SELECT COUNT() FROM ... → assign integer
+            soql_upper = stmt.soql.upper()
+            if "COUNT()" in soql_upper and "SELECT COUNT()" in soql_upper:
+                self.variables[stmt.var_name] = len(results) if isinstance(results, list) else 0
+            elif not stmt.is_list and isinstance(results, list):
+                # Single SObject assignment: take first result or None
+                self.variables[stmt.var_name] = results[0] if results else None
+            else:
+                self.variables[stmt.var_name] = results
 
         elif isinstance(stmt, DmlInsert):
             self._exec_dml_insert(stmt)
@@ -156,8 +163,8 @@ class ApexInterpreter:
 
         elif isinstance(stmt, ForEach):
             items = self._eval(stmt.list_expr)
-            if items is None:
-                items = []
+            if items is None or not hasattr(items, '__iter__') or isinstance(items, (str, dict)):
+                items = [] if items is None or isinstance(items, bool) else [items]
             for item in items:
                 self.variables[stmt.iter_var] = item
                 try:
@@ -428,10 +435,22 @@ class ApexInterpreter:
                     return left + right
                 return str(left) + str(right)
             elif expr.op == "-":
+                if left is None:
+                    left = 0
+                if right is None:
+                    right = 0
                 return left - right
             elif expr.op == "*":
+                if left is None:
+                    left = 0
+                if right is None:
+                    right = 0
                 return left * right
             elif expr.op == "/":
+                if left is None:
+                    left = 0
+                if right is None:
+                    right = 0
                 return left / right
             elif expr.op == "==":
                 return left == right
@@ -440,23 +459,56 @@ class ApexInterpreter:
             elif expr.op == "<":
                 if left is None or right is None:
                     return False
-                return left < right
+                try:
+                    return left < right
+                except TypeError:
+                    return False
             elif expr.op == ">":
                 if left is None or right is None:
                     return False
-                return left > right
+                try:
+                    return left > right
+                except TypeError:
+                    return False
             elif expr.op == "<=":
                 if left is None or right is None:
                     return False
-                return left <= right
+                try:
+                    return left <= right
+                except TypeError:
+                    return False
             elif expr.op == ">=":
                 if left is None or right is None:
                     return False
-                return left >= right
+                try:
+                    return left >= right
+                except TypeError:
+                    return False
             elif expr.op == "&&":
                 return self._is_truthy(left) and self._is_truthy(right)
             elif expr.op == "||":
                 return self._is_truthy(left) or self._is_truthy(right)
+            elif expr.op == "instanceof":
+                # Check _type or _sobject_type on left against right class name
+                type_name = None
+                if isinstance(right, str):
+                    type_name = right
+                elif isinstance(expr.right, Variable):
+                    type_name = expr.right.name
+                if type_name and isinstance(left, dict):
+                    obj_type = left.get("_type") or left.get("_sobject_type") or ""
+                    cls = left.get("_class")
+                    if cls:
+                        # Walk inheritance chain
+                        while cls:
+                            if cls.name == type_name:
+                                return True
+                            if cls.parent_class:
+                                cls = self.classes.get(cls.parent_class)
+                            else:
+                                break
+                    return obj_type == type_name
+                return False
             raise Exception("Opérateur inconnu: {}".format(expr.op))
 
         elif isinstance(expr, NewSObject):
@@ -765,10 +817,18 @@ class ApexInterpreter:
         # JSON static methods
         if call.obj == "JSON":
             import json as _json
+
+            def _default(o):
+                if isinstance(o, ClassDef):
+                    return o.name
+                if isinstance(o, set):
+                    return list(o)
+                return str(o)
+
             if method == "serialize":
-                return _json.dumps(args[0]) if args else "null"
+                return _json.dumps(args[0], default=_default) if args else "null"
             elif method == "serializePretty":
-                return _json.dumps(args[0], indent=2) if args else "null"
+                return _json.dumps(args[0], indent=2, default=_default) if args else "null"
             elif method == "deserialize":
                 if len(args) >= 2 and isinstance(args[0], str):
                     return _json.loads(args[0])
@@ -930,6 +990,47 @@ class ApexInterpreter:
                 if len(args) >= 3:
                     return {"_type": "DateTime", "year": int(args[0]), "month": int(args[1]), "day": int(args[2])}
                 return None
+            if method == "now":
+                import datetime
+                d = datetime.datetime.now()
+                return {"_type": "DateTime", "year": d.year, "month": d.month, "day": d.day,
+                        "hour": d.hour, "minute": d.minute, "second": d.second}
+            if method == "valueOf":
+                return {"_type": "DateTime"} if args else None
+
+        # Test static methods
+        if call.obj == "Test":
+            if method == "isRunningTest":
+                return True
+            if method == "getEventBus":
+                return {"_type": "EventBus"}
+            if method in ("startTest", "stopTest", "setMock", "setCreatedDate",
+                          "setCurrentPage", "setCurrentPageReference", "setReadOnlyApplicationMode",
+                          "setFixedSearchResults", "loadData"):
+                return None
+
+        # String static methods
+        if call.obj == "String":
+            if method == "escapeSingleQuotes":
+                return args[0].replace("'", "\\'") if args and isinstance(args[0], str) else (args[0] if args else "")
+            if method == "valueOf":
+                return str(args[0]) if args else ""
+            if method == "isBlank":
+                return args[0] is None or (isinstance(args[0], str) and args[0].strip() == "") if args else True
+            if method == "isNotBlank":
+                return args[0] is not None and isinstance(args[0], str) and args[0].strip() != "" if args else False
+            if method == "isEmpty":
+                return args[0] is None or args[0] == "" if args else True
+            if method == "join":
+                if len(args) >= 2:
+                    return str(args[1]).join(str(x) for x in args[0]) if isinstance(args[0], list) else str(args[0])
+                return ""
+            if method == "format":
+                return str(args[0]) if args else ""
+
+        # System.schedule
+        if call.obj == "System" and method == "schedule":
+            return "FakeJobId_001"
 
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))
 
@@ -1142,6 +1243,29 @@ class ApexInterpreter:
                 return m.get("_url", "").split("//")[-1].split("/")[0]
             return m.get("_url", "")
 
+        # DateTime object
+        if m.get("_type") == "DateTime":
+            if method == "date":
+                return {"_type": "Date", "year": m.get("year"), "month": m.get("month"), "day": m.get("day")}
+            if method == "year":
+                return m.get("year")
+            if method == "month":
+                return m.get("month")
+            if method == "day":
+                return m.get("day")
+            if method == "format":
+                return "{}-{:02d}-{:02d}".format(m.get("year", 0), m.get("month", 0), m.get("day", 0))
+            if method == "getTime":
+                import datetime
+                dt = datetime.datetime(m.get("year", 2000), m.get("month", 1), m.get("day", 1),
+                                       m.get("hour", 0), m.get("minute", 0), m.get("second", 0))
+                return int(dt.timestamp() * 1000)
+            if method == "addDays":
+                import datetime
+                d = datetime.date(m["year"], m["month"], m["day"])
+                d2 = d + datetime.timedelta(days=int(args[0]) if args else 0)
+                return {"_type": "DateTime", "year": d2.year, "month": d2.month, "day": d2.day}
+
         # Date object
         if m.get("_type") == "Date":
             if method == "year":
@@ -1169,6 +1293,14 @@ class ApexInterpreter:
             val = m.get(method)
             if val is not None:
                 return val
+        # Exception-like dicts: getMessage(), getTypeName(), etc.
+        if method == "getMessage":
+            return m.get("getMessage", m.get("message", str(m)))
+        if method == "getTypeName":
+            return m.get("_type", "Exception")
+        if method == "getStackTraceString":
+            return ""
+
         methods = {
             "put": lambda: m.__setitem__(args[0], args[1]) if len(args) >= 2 else None,
             "get": lambda: m.get(args[0]) if args else None,
@@ -1178,9 +1310,13 @@ class ApexInterpreter:
             "size": lambda: len(m),
             "isEmpty": lambda: len(m) == 0,
             "remove": lambda: m.pop(args[0], None) if args else None,
+            "clone": lambda: dict(m),
         }
         if method in methods:
             return methods[method]()
+        # Fallback: try field access (covers SObject-like dicts without _sobject_type)
+        if method in m:
+            return m[method]
         raise Exception("Map.{}() non supporté".format(method))
 
     def _resolve_class_chain(self, class_def):

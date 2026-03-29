@@ -534,16 +534,18 @@ class ApexParser:
                 value=self._parse_expr(field_set_match.group(3)),
             )
 
-        # --- List<SObject> var = [SOQL]; --- (only if content starts with SELECT)
+        # --- List<SObject> var = [SOQL]; or Integer var = [SELECT COUNT()...]; ---
         soql_match = re.match(
-            r'(?:List<(\w+)>\s+)?(\w+)\s*=\s*\[(\s*SELECT.+?)\]\s*;?$',
+            r'(?:List<(\w+)>\s+|(\w+)\s+)?(\w+)\s*=\s*\[(\s*SELECT.+?)\]\s*;?$',
             stmt, re.DOTALL | re.IGNORECASE
         )
         if soql_match:
+            is_list_type = soql_match.group(1) is not None  # List<X> syntax
             return SOQLAssign(
-                type_name=soql_match.group(1),
-                var_name=soql_match.group(2),
-                soql="[{}]".format(soql_match.group(3)),
+                type_name=soql_match.group(1) or soql_match.group(2),
+                var_name=soql_match.group(3),
+                soql="[{}]".format(soql_match.group(4)),
+                is_list=is_list_type,
             )
 
         # --- List<T> var = new List<T>(); or List<T> var = new List<T>{...}; ---
