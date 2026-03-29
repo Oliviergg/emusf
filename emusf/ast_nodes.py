@@ -297,4 +297,5 @@ class ClassDef:
     name: str
     constants: dict  # {name: (type, Expr)}
     methods: dict  # {name: MethodDef}
+    properties: dict = field(default_factory=dict)  # {name: type_name}  — Apex {get;set;}
     sharing: Optional[str] = None  # 'with sharing', 'without sharing'

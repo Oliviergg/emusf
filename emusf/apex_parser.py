@@ -62,18 +62,21 @@ class ApexParser:
         # Parser les membres
         constants = {}
         methods = {}
+        properties = {}
 
-        self._parse_class_members(class_body, constants, methods)
+        self._parse_class_members(class_body, constants, methods, properties)
 
         return ClassDef(
             name=class_name,
             constants=constants,
             methods=methods,
+            properties=properties,
             sharing=sharing,
         )
 
-    def _parse_class_members(self, body: str, constants: dict, methods: dict):
-        """Parse les membres d'une classe (constantes et méthodes)."""
+    def _parse_class_members(self, body: str, constants: dict, methods: dict,
+                              properties: dict | None = None):
+        """Parse les membres d'une classe (constantes, méthodes, propriétés)."""
         # Strip comments
         lines = body.split("\n")
         lines = [l for l in lines if not l.strip().startswith("//")]
@@ -168,6 +171,26 @@ class ApexParser:
                 constants[var_name] = (type_name, value_expr)
             except Exception:
                 pass
+
+        # Trouver les propriétés {get;set;} (hors des méthodes)
+        if properties is not None:
+            prop_pattern = re.compile(
+                r'(?:public|private|protected|global)\s+'
+                r'([\w<>,.\s]+?)\s+'
+                r'(\w+)\s*\{[^}]*get\s*;[^}]*set\s*;[^}]*\}',
+                re.IGNORECASE,
+            )
+            for m in prop_pattern.finditer(body):
+                in_method = False
+                for mstart, mend in method_positions:
+                    if mstart <= m.start() <= mend:
+                        in_method = True
+                        break
+                if in_method:
+                    continue
+                type_name = m.group(1).strip()
+                prop_name = m.group(2)
+                properties[prop_name] = type_name
 
     def _extract_until_semi(self, source: str, start: int) -> Optional[str]:
         """Extrait le texte de start jusqu'au ; en respectant {}, () et strings."""

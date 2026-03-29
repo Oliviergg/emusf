@@ -114,11 +114,27 @@ def parse_soql(soql: str, context: Optional[dict] = None) -> SOQLQuery:
         where_clause = where_match.group(1)
 
         def resolve_bind(match):
-            var_name = match.group(1)
-            value = context.get(var_name)
+            path = match.group(1)
+            parts = path.split(".")
+            value = context.get(parts[0])
+            for part in parts[1:]:
+                if isinstance(value, dict):
+                    # Case-insensitive lookup
+                    found = value.get(part)
+                    if found is None:
+                        for k, v in value.items():
+                            if k.lower() == part.lower():
+                                found = v
+                                break
+                    value = found
+                else:
+                    value = None
+                    break
+            if value is None:
+                return "NULL"
             return "'{}'".format(value) if isinstance(value, str) else str(value)
 
-        where_clause = re.sub(r":(\w+)", resolve_bind, where_clause)
+        where_clause = re.sub(r":([\w.]+)", resolve_bind, where_clause)
 
     return SOQLQuery(
         fields=fields,

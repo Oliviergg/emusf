@@ -14,6 +14,9 @@ from markupsafe import Markup
 
 from emusf.pg_org import PgOrg
 from emusf.sfdx_loader import load_sobject_meta
+from emusf.vf_parser import parse_vf_page
+from emusf.vf_controller import VfPageContext
+from emusf.vf_renderer import VfRenderer
 from emusf.layout_parser import (
     parse_layout,
     load_field_labels,
@@ -30,6 +33,8 @@ DSN = "host=localhost port=6000 user=postgres password=dcc948df3501919f709cb976f
 SFDX_BASE = "/Users/olivier/Dev/btp/sf-btp/force-app/main/default"
 OBJECTS_DIR = os.path.join(SFDX_BASE, "objects")
 LAYOUTS_DIR = os.path.join(SFDX_BASE, "layouts")
+PAGES_DIR = os.path.join(SFDX_BASE, "pages")
+CLASSES_DIR = os.path.join(SFDX_BASE, "classes")
 
 # SObjects supportés avec leur layout par défaut
 SOBJECT_CONFIG = {
@@ -764,6 +769,48 @@ def _fetch_related_lists(layout: PageLayout, record_id: str, sobject: str) -> di
             related_data[rl_key] = rows
 
     return related_data
+
+
+# --- Visualforce Pages ---
+
+@app.route("/apex/<page_name>", methods=["GET", "POST"])
+def vf_page(page_name):
+    """Sert une page Visualforce depuis le répertoire SFDX pages/."""
+    page_path = os.path.join(PAGES_DIR, page_name + ".page")
+    if not os.path.exists(page_path):
+        abort(404, "Page Visualforce '{}' introuvable".format(page_name))
+
+    record_id = request.args.get("id")
+    page_node = parse_vf_page(page_path)
+
+    try:
+        ctx = VfPageContext(page_node, record_id, org, CLASSES_DIR)
+    except Exception as e:
+        # Si le controller échoue, on rend la page sans controller
+        ctx = VfPageContext.__new__(VfPageContext)
+        ctx.page_node = page_node
+        ctx.record_id = record_id
+        ctx.org = org
+        ctx.record = {"Id": record_id, "id": record_id, "_sobject_type": ""} if record_id else None
+        ctx.instance_vars = {}
+        ctx.messages = [{"severity": "WARNING",
+                         "summary": "Controller error: {}".format(e)}]
+        ctx.interpreter = None
+        ctx.class_name = None
+
+    # POST : exécuter l'action
+    if request.method == "POST":
+        action_name = request.form.get("__vf_action__", "")
+        if action_name and ctx.interpreter:
+            result = ctx.call_action(action_name)
+            if result and result.get("url"):
+                return redirect(result["url"])
+            # Sinon re-render la page avec les messages mis à jour
+
+    renderer = VfRenderer(ctx, page_name)
+    vf_html = renderer.render()
+    return render_template("vf_page.html", page_name=page_name,
+                           vf_html=Markup(vf_html))
 
 
 # --- Main ---

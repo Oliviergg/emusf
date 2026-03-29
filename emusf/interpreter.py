@@ -319,6 +319,13 @@ class ApexInterpreter:
             return self.variables.get(expr.name)
 
         elif isinstance(expr, FieldAccess):
+            # ApexPages.severity → enum marker
+            if expr.obj == "ApexPages" and expr.field.lower() == "severity":
+                return {"_type": "ApexPages.severity"}
+            # system.today() parsé comme FieldAccess puis ChainedCall
+            if expr.obj.lower() == "system" and expr.field.lower() == "today":
+                from datetime import date
+                return date.today()
             # Constante de classe : ClassName.CONST
             class_key = "{}.{}".format(expr.obj, expr.field)
             if class_key in self.variables:
@@ -382,6 +389,17 @@ class ApexInterpreter:
                 for field, val_expr in expr.fields.items():
                     obj[field] = self._eval(val_expr)
                 return obj
+            # ApexPages.Message(severity, summary)
+            if expr.sobject_type in ("ApexPages.Message", "ApexPages.message"):
+                args = [self._eval(v) for v in expr.fields.values()]
+                return {"_type": "ApexPages.Message",
+                        "severity": args[0] if args else "ERROR",
+                        "summary": args[1] if len(args) > 1 else ""}
+            # PageReference
+            if expr.sobject_type == "PageReference":
+                args = [self._eval(v) for v in expr.fields.values()]
+                return {"_type": "PageReference",
+                        "url": args[0] if args else "/"}
             record = {"_sobject_type": expr.sobject_type}
             for field, val_expr in expr.fields.items():
                 record[field] = self._eval(val_expr)
@@ -408,6 +426,33 @@ class ApexInterpreter:
         elif isinstance(expr, ChainedCall):
             target = self._eval(expr.target)
             args = [self._eval(a) for a in expr.args]
+
+            # ApexPages enum: ApexPages.severity.INFO → "INFO"
+            if isinstance(target, dict) and target.get("_type") == "ApexPages.severity":
+                return expr.method  # "INFO", "ERROR", "WARNING", "CONFIRM"
+
+            # new ApexPages.message(...) parsé comme NewSObject("ApexPages").message(...)
+            if (isinstance(target, dict) and target.get("_sobject_type") == "ApexPages"
+                    and expr.method.lower() == "message"):
+                return {"_type": "ApexPages.Message",
+                        "severity": args[0] if args else "ERROR",
+                        "summary": args[1] if len(args) > 1 else ""}
+
+            # new ApexPages.StandardController(record).view()
+            if (isinstance(target, dict) and target.get("_sobject_type") == "ApexPages"
+                    and expr.method.lower() == "standardcontroller"):
+                rec = args[0] if args else {}
+                ctrl = dict(rec) if isinstance(rec, dict) else {"Id": rec}
+                ctrl["_type"] = "ApexPages.StandardController"
+                return ctrl
+
+            # ApexPages.StandardController(record).view()
+            if isinstance(target, dict) and target.get("_type") == "ApexPages.StandardController":
+                if expr.method == "view":
+                    return {"_type": "PageReference", "url": "/" + (target.get("Id") or "")}
+                if expr.method == "getRecord":
+                    return {k: v for k, v in target.items() if k != "_type"}
+
             # Field access on dict when no args (e.g., account.Name after get(0))
             if not args and isinstance(target, dict) and expr.method in target:
                 return target[expr.method]
@@ -467,6 +512,15 @@ class ApexInterpreter:
         if isinstance(obj, (list, set)):
             return self._call_on_value(obj, method, args)
 
+        # ApexPages.StandardController instance methods
+        if isinstance(obj, dict) and obj.get("_type") == "ApexPages.StandardController":
+            if method == "getRecord":
+                return {k: v for k, v in obj.items() if k not in ("_type",)}
+            if method == "getId":
+                return obj.get("Id")
+            if method == "view":
+                return {"_type": "PageReference", "url": "/" + (obj.get("Id") or "")}
+
         # All typed dicts (Pattern, Matcher, Date, HttpRequest, HttpResponse, etc.)
         if isinstance(obj, dict) and "_type" in obj:
             return self._call_map_method(obj, method, args)
@@ -500,6 +554,13 @@ class ApexInterpreter:
         elif isinstance(obj, str):
             return self._call_string_method(obj, method, args)
 
+        # ApexPages.StandardController methods
+        elif isinstance(obj, dict) and obj.get("_type") == "ApexPages.StandardController":
+            if method == "getRecord":
+                return {k: v for k, v in obj.items() if k != "_type"}
+            if method == "getId":
+                return obj.get("Id")
+
         # SObject field access via method (e.getMessage() etc.)
         elif isinstance(obj, dict):
             val = obj.get(method)
@@ -515,6 +576,13 @@ class ApexInterpreter:
             return self._invoke_method(self._current_class, self._current_class.methods[method], args)
         if self._current_class and method in self._current_class.methods:
             return self._invoke_method(self._current_class, self._current_class.methods[method], args)
+
+        # ApexPages
+        if call.obj == "ApexPages":
+            if method in ("addMessage", "addmessage"):
+                msg = args[0] if args else {}
+                self.variables.setdefault("__apex_messages__", []).append(msg)
+                return None
 
         # String static methods
         if call.obj == "String":
@@ -861,6 +929,100 @@ class ApexInterpreter:
             result = ret.value
 
         # Restaurer le scope précédent
+        self.variables = saved_vars
+        self._current_class = saved_class
+        return result
+
+    def create_instance(self, class_name: str, constructor_args: list = None):
+        """Instancie une classe : exécute le constructeur et retourne l'état d'instance."""
+        if constructor_args is None:
+            constructor_args = []
+        class_def = self.classes.get(class_name)
+        if not class_def:
+            raise Exception("Classe '{}' non chargée".format(class_name))
+
+        # Initialiser les propriétés {get;set;} à None
+        instance_vars = {}
+        for prop_name in class_def.properties:
+            instance_vars[prop_name] = None
+
+        # Trouver le constructeur (méthode dont le nom = nom de classe)
+        constructor = class_def.methods.get(class_name)
+        if constructor:
+            saved_class = self._current_class
+            saved_vars = self.variables.copy()
+            self._current_class = class_def
+
+            new_scope = dict(instance_vars)
+            # Copier les constantes
+            for k, v in saved_vars.items():
+                if "." in k:
+                    new_scope[k] = v
+            for name, (type_name, expr) in class_def.constants.items():
+                key = "{}.{}".format(class_def.name, name)
+                if key not in new_scope:
+                    new_scope[key] = self._eval(expr)
+                new_scope[name] = new_scope[key]
+            # Injecter les paramètres du constructeur
+            for i, (ptype, pname) in enumerate(constructor.params):
+                new_scope[pname] = constructor_args[i] if i < len(constructor_args) else None
+
+            self.variables = new_scope
+            try:
+                for stmt in constructor.body:
+                    self._exec_stmt(stmt)
+            except ReturnException:
+                pass
+
+            # Capturer l'état d'instance (tout sauf les constantes ClassName.X)
+            instance_vars = {k: v for k, v in self.variables.items()
+                            if "." not in k}
+
+            self.variables = saved_vars
+            self._current_class = saved_class
+
+        return instance_vars
+
+    def call_instance_method(self, class_name: str, method_name: str,
+                             instance_vars: dict, args: list = None):
+        """Appelle une méthode d'instance avec un état pré-existant."""
+        if args is None:
+            args = []
+        class_def = self.classes.get(class_name)
+        if not class_def:
+            raise Exception("Classe '{}' non chargée".format(class_name))
+        method = class_def.methods.get(method_name)
+        if not method:
+            raise Exception("Méthode '{}.{}' non trouvée".format(class_name, method_name))
+
+        saved_class = self._current_class
+        saved_vars = self.variables.copy()
+        self._current_class = class_def
+
+        new_scope = dict(instance_vars)
+        for k, v in saved_vars.items():
+            if "." in k:
+                new_scope[k] = v
+        for name, (type_name, expr) in class_def.constants.items():
+            key = "{}.{}".format(class_def.name, name)
+            if key not in new_scope:
+                new_scope[key] = self._eval(expr)
+            new_scope[name] = new_scope[key]
+        for i, (ptype, pname) in enumerate(method.params):
+            new_scope[pname] = args[i] if i < len(args) else None
+
+        self.variables = new_scope
+        result = None
+        try:
+            for stmt in method.body:
+                self._exec_stmt(stmt)
+        except ReturnException as ret:
+            result = ret.value
+
+        # Mettre à jour l'état d'instance
+        instance_vars.update({k: v for k, v in self.variables.items()
+                              if "." not in k})
+
         self.variables = saved_vars
         self._current_class = saved_class
         return result
