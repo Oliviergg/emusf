@@ -37,6 +37,9 @@ class SfTestInterpreter(ApexTestInterpreter):
             self.job_queue.flush(self)  # Execute all queued jobs
             return None
         if call.obj == "Test" and call.method == "setMock":
+            args = [self._eval(a) for a in call.args]
+            if len(args) >= 2:
+                self._http_mock = args[1]
             return None
         return super()._exec_method_call(call)
 
@@ -130,9 +133,18 @@ def run_test_class(test_class_name, all_classes, parser):
             interp.classes[name] = cls
             for cname, (ctype, expr) in cls.constants.items():
                 try:
-                    interp.variables["{}.{}".format(name, cname)] = interp._eval(expr)
+                    interp.variables["{}.{}".format(name, cname)] = interp._eval(expr) if expr is not None else None
                 except Exception:
                     pass
+
+        # Charger les inner classes du fichier test
+        try:
+            test_class_def = parser.parse_full_class(test_source)
+            interp.classes[test_class_def.name] = test_class_def
+            for ic_name, ic_def in test_class_def.inner_classes.items():
+                interp.classes[ic_name] = ic_def
+        except Exception:
+            pass
 
         try:
             # Run @testSetup first if present

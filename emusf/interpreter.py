@@ -51,6 +51,7 @@ class ApexInterpreter:
         self._current_class = None  # ClassDef en cours d'exécution
         self._current_instance = None  # Instance en cours (pour this)
         self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
+        self._http_mock = None  # Instance HttpCalloutMock pour Test.setMock
 
     def load_class(self, path_or_source: str, is_path: bool = True):
         """Charge une classe Apex dans l'interpréteur."""
@@ -63,7 +64,7 @@ class ApexInterpreter:
         self.classes[class_def.name] = class_def
         # Charger les constantes dans les variables sous namespace ClassName.CONST
         for name, (type_name, expr) in class_def.constants.items():
-            self.variables["{}.{}".format(class_def.name, name)] = self._eval(expr)
+            self.variables["{}.{}".format(class_def.name, name)] = self._eval(expr) if expr is not None else None
         return class_def
 
     def call_method(self, class_name: str, method_name: str, args: list = None):
@@ -128,7 +129,14 @@ class ApexInterpreter:
             self.variables[stmt.var_name] = self._eval(stmt.value)
 
         elif isinstance(stmt, Assign):
-            self.variables[stmt.var_name] = self._eval(stmt.value)
+            val = self._eval(stmt.value)
+            self.variables[stmt.var_name] = val
+            # Synchroniser la variable statique si elle existe (ClassName.field)
+            if self._current_class and stmt.var_name in self._current_class.constants:
+                self.variables["{}.{}".format(self._current_class.name, stmt.var_name)] = val
+            # Synchroniser le champ d'instance si assigné sans this.
+            if self._current_instance is not None and stmt.var_name in self._current_instance and stmt.var_name not in ("_type", "_class", "_chain"):
+                self._current_instance[stmt.var_name] = val
 
         elif isinstance(stmt, FieldSet):
             # this.field = value
@@ -419,7 +427,12 @@ class ApexInterpreter:
         elif isinstance(expr, Variable):
             if expr.name == "this":
                 return self._current_instance
-            return self.variables.get(expr.name)
+            val = self.variables.get(expr.name)
+            # Fallback: champ d'instance implicite (sans this.)
+            if val is None and expr.name not in self.variables and self._current_instance is not None:
+                if expr.name in self._current_instance and expr.name not in ("_type", "_class", "_chain"):
+                    return self._current_instance[expr.name]
+            return val
 
         elif isinstance(expr, FieldAccess):
             # this.field
@@ -722,6 +735,27 @@ class ApexInterpreter:
             if method == "view":
                 return {"_type": "PageReference", "url": "/" + (obj.get("Id") or "")}
 
+        # Plain dict (Map) methods — ex: JSON.deserializeUntyped retourne des dicts sans _type
+        if isinstance(obj, dict) and "_class" not in obj:
+            if method == "get":
+                return obj.get(args[0]) if args else None
+            if method == "put":
+                if len(args) >= 2:
+                    obj[args[0]] = args[1]
+                return None
+            if method == "containsKey":
+                return args[0] in obj if args else False
+            if method == "keySet":
+                return set(k for k in obj.keys() if not k.startswith("_"))
+            if method == "values":
+                return [v for k, v in obj.items() if not k.startswith("_")]
+            if method == "size":
+                return len([k for k in obj if not k.startswith("_")])
+            if method == "isEmpty":
+                return len(obj) == 0
+            if method == "remove":
+                return obj.pop(args[0], None) if args else None
+
         # All typed dicts (Pattern, Matcher, Date, HttpRequest, HttpResponse, etc.)
         if isinstance(obj, dict) and "_type" in obj and "_class" not in obj:
             return self._call_map_method(obj, method, args)
@@ -938,15 +972,14 @@ class ApexInterpreter:
             import uuid
             return str(uuid.uuid4())
 
-        # Http.send() — callout réel ou mock
+        # Http.send() — callout réel, mock, ou défaut
         if call.obj == "Http":
             if method == "send":
                 req = args[0] if args else {}
                 if self.named_credentials and isinstance(req, dict):
                     from .callout import execute_callout
                     return execute_callout(req, self.named_credentials)
-                return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
-                        "_headers": {}}
+                return self._http_send(req)
 
         # URL static methods
         if call.obj == "URL":
@@ -1006,6 +1039,64 @@ class ApexInterpreter:
             if method == "base64Decode":
                 import base64
                 return base64.b64decode(str(args[0])).decode() if args else ""
+            if method == "convertToHex":
+                val = args[0] if args else ""
+                if isinstance(val, (bytes, bytearray)):
+                    return val.hex()
+                return val.encode().hex() if isinstance(val, str) else ""
+            if method == "convertFromHex":
+                val = str(args[0]) if args else ""
+                return bytes.fromhex(val)
+
+        # Crypto static methods
+        if call.obj == "Crypto":
+            if method == "encrypt":
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                algo = str(args[0]) if args else ""
+                key = args[1] if len(args) > 1 else b""
+                iv = args[2] if len(args) > 2 else b""
+                data = args[3] if len(args) > 3 else b""
+                if isinstance(key, str):
+                    key = key.encode()
+                if isinstance(iv, str):
+                    iv = iv.encode()
+                if isinstance(data, str):
+                    data = data.encode()
+                # PKCS7 padding
+                block_size = 16
+                pad_len = block_size - (len(data) % block_size)
+                data = data + bytes([pad_len]) * pad_len
+                cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
+                encryptor = cipher.encryptor()
+                return encryptor.update(data) + encryptor.finalize()
+            if method == "generateAesKey":
+                import os
+                bits = int(args[0]) if args else 128
+                return os.urandom(bits // 8)
+            if method == "getRandomInteger":
+                import random
+                return random.randint(-2147483648, 2147483647)
+            if method == "generateMac":
+                import hmac, hashlib
+                algo = str(args[0]).lower().replace("-", "") if args else "hmacsha256"
+                data = args[1] if len(args) > 1 else b""
+                key = args[2] if len(args) > 2 else b""
+                if isinstance(data, str):
+                    data = data.encode()
+                if isinstance(key, str):
+                    key = key.encode()
+                hash_map = {"hmacsha256": hashlib.sha256, "hmacsha1": hashlib.sha1, "hmacmd5": hashlib.md5}
+                hash_fn = hash_map.get(algo, hashlib.sha256)
+                return hmac.new(key, data, hash_fn).digest()
+            if method == "generateDigest":
+                import hashlib
+                algo = str(args[0]).lower().replace("-", "") if args else "sha256"
+                data = args[1] if len(args) > 1 else b""
+                if isinstance(data, str):
+                    data = data.encode()
+                hash_map = {"sha256": hashlib.sha256, "sha1": hashlib.sha1, "md5": hashlib.md5}
+                hash_fn = hash_map.get(algo, hashlib.sha256)
+                return hash_fn(data).digest()
 
         # Date static methods
         if call.obj == "Date":
@@ -1038,7 +1129,12 @@ class ApexInterpreter:
                 return True
             if method == "getEventBus":
                 return {"_type": "EventBus"}
-            if method in ("startTest", "stopTest", "setMock", "setCreatedDate",
+            if method == "setMock":
+                # Test.setMock(HttpCalloutMock.class, mockInstance)
+                if len(args) >= 2:
+                    self._http_mock = args[1]
+                return None
+            if method in ("startTest", "stopTest", "setCreatedDate",
                           "setCurrentPage", "setCurrentPageReference", "setReadOnlyApplicationMode",
                           "setFixedSearchResults", "loadData"):
                 return None
@@ -1231,20 +1327,27 @@ class ApexInterpreter:
             if method == "getJobId":
                 return m.get("jobId")
 
-        # Http — callout réel ou mock
+        # Http — callout réel, mock, ou défaut
         if m.get("_type") == "Http":
             if method == "send":
                 req = args[0] if args else {}
                 if self.named_credentials and isinstance(req, dict):
                     from .callout import execute_callout
                     return execute_callout(req, self.named_credentials)
-                return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}",
-                        "_headers": {}}
+                return self._http_send(req)
 
-        # HttpRequest mock
+        # HttpRequest
         if m.get("_type") == "HttpRequest":
-            if method in ("setEndpoint", "setMethod", "setHeader", "setBody", "setTimeout"):
-                m["_" + method[3:].lower() if method.startswith("set") else method] = args[0] if args else None
+            if method == "setHeader":
+                if "_headers" not in m:
+                    m["_headers"] = {}
+                if len(args) >= 2:
+                    m["_headers"][args[0]] = args[1]
+                return None
+            if method == "getHeader":
+                return m.get("_headers", {}).get(args[0], "") if args else ""
+            if method in ("setEndpoint", "setMethod", "setBody", "setTimeout"):
+                m["_" + method[3:].lower()] = args[0] if args else None
                 return None
             if method == "getEndpoint":
                 return m.get("_endpoint", "")
@@ -1258,6 +1361,11 @@ class ApexInterpreter:
         if m.get("_type") == "HttpResponse":
             if method == "getStatusCode":
                 return m.get("_statusCode", 200)
+            if method == "getStatus":
+                code = m.get("_statusCode", 200)
+                statuses = {200: "OK", 201: "Created", 204: "No Content", 400: "Bad Request",
+                            401: "Unauthorized", 404: "Not Found", 500: "Internal Server Error"}
+                return statuses.get(code, "Unknown")
             if method == "getBody":
                 return m.get("_body", "")
             if method == "getHeader":
@@ -1432,6 +1540,15 @@ class ApexInterpreter:
                 break
         if constructor:
             self._run_constructor(instance, class_def, constructor, args)
+        elif args:
+            # Auto-constructeur pour les classes Exception sans constructeur explicite
+            is_exception = any(
+                c.parent_class and "Exception" in (c.parent_class or "")
+                for c in chain
+            )
+            if is_exception:
+                instance["message"] = args[0]
+                instance["getMessage"] = args[0]
 
         return instance
 
@@ -1519,6 +1636,14 @@ class ApexInterpreter:
         self._current_instance = saved_instance
         self._current_class = saved_class
 
+    def _http_send(self, request):
+        """Exécute Http.send() — délègue au mock si Test.setMock a été appelé."""
+        if self._http_mock and isinstance(self._http_mock, dict) and "_class" in self._http_mock:
+            respond = self._resolve_method_in_chain(self._http_mock["_class"], "respond")
+            if respond:
+                return self._invoke_instance_method(self._http_mock, respond, [request])
+        return {"_type": "HttpResponse", "_statusCode": 200, "_body": "{}", "_headers": {}}
+
     def _invoke_instance_method(self, instance, method_def, args):
         """Invoque une méthode d'instance sur un objet."""
         class_def = instance.get("_class")
@@ -1580,7 +1705,7 @@ class ApexInterpreter:
         for name, (type_name, expr) in class_def.constants.items():
             key = "{}.{}".format(class_def.name, name)
             if key not in new_scope:
-                new_scope[key] = self._eval(expr)
+                new_scope[key] = self._eval(expr) if expr is not None else None
             new_scope[name] = new_scope[key]
 
         # Injecter les paramètres
@@ -1595,6 +1720,13 @@ class ApexInterpreter:
                 self._exec_stmt(stmt)
         except ReturnException as ret:
             result = ret.value
+
+        # Persister les modifications de variables statiques (ClassName.field)
+        for k, v in self.variables.items():
+            if "." in k and k in saved_vars and saved_vars[k] != v:
+                saved_vars[k] = v
+            elif "." in k and k not in saved_vars:
+                saved_vars[k] = v
 
         # Restaurer le scope précédent
         self.variables = saved_vars

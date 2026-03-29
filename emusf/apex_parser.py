@@ -121,13 +121,14 @@ class ApexParser:
             r'(?:public|private|protected|global)\s+'
             r'(?:virtual\s+|abstract\s+)?'
             r'class\s+(\w+)'
-            r'(?:\s+extends\s+\w+)?'
+            r'(?:\s+extends\s+(\w+))?'
             r'(?:\s+implements\s+[\w,\s]+)?'
             r'\s*\{',
         )
         inner_positions = []
         for m in inner_pattern.finditer(body):
             inner_name = m.group(1)
+            inner_parent = m.group(2)  # extends clause (may be None)
             if inner_name == class_name:
                 continue  # Skip the outer class itself
             bstart = m.end()
@@ -158,6 +159,7 @@ class ApexParser:
                 instance_fields=ic_instance_fields,
                 constructors=ic_constructors,
                 inner_classes=ic_inner,
+                parent_class=inner_parent,
             )
 
         # --- 2. Find methods and constructors ---
@@ -238,7 +240,7 @@ class ApexParser:
 
         # --- 3. Find fields (static constants and instance variables) ---
         field_header = re.compile(
-            r'(?:(?:public|private|protected|global)\s+)'
+            r'(?:(?:public|private|protected|global)\s+)?'
             r'((?:static\s+)?(?:final\s+)?)'
             r'([\w<>,\s]+?)\s+'
             r'(\w+)\s*'
@@ -248,7 +250,7 @@ class ApexParser:
             # Skip if inside a method or inner class
             in_member = False
             for ms, me in method_positions + inner_positions:
-                if ms <= m.start() <= me:
+                if ms <= m.start() < me:
                     in_member = True
                     break
             if in_member:
@@ -257,7 +259,10 @@ class ApexParser:
             modifiers = m.group(1).strip()
             type_name = m.group(2).strip()
             var_name = m.group(3)
-            is_static = "static" in modifiers
+            # static peut se retrouver dans group 1 ou group 2 selon les access modifiers
+            is_static = "static" in modifiers or "static" in type_name
+            # Nettoyer le type si static/final se sont glissés dedans
+            type_name = re.sub(r'\b(static|final)\b', '', type_name).strip()
 
             # Check if it has an initializer (=) or just declaration (;)
             matched_end = m.group(0)
@@ -279,7 +284,7 @@ class ApexParser:
             else:
                 # Declaration without init
                 if is_static:
-                    pass  # Static without init — skip
+                    constants[var_name] = (type_name, None)  # Static sans init → null
                 else:
                     instance_fields[var_name] = type_name
 
@@ -294,7 +299,7 @@ class ApexParser:
             for m in prop_pattern.finditer(body):
                 in_member = False
                 for ms, me in method_positions + inner_positions:
-                    if ms <= m.start() <= me:
+                    if ms <= m.start() < me:
                         in_member = True
                         break
                 if in_member:
@@ -612,7 +617,7 @@ class ApexParser:
         # --- Type var = new Type(...); or Type var = new Type(); ---
         # Delegate to _parse_expr which uses the token parser
         new_match = re.match(
-            r'(\w+(?:<[\w,\s]+>)?)\s+(\w+)\s*=\s*(new\s+.+?)\s*;?$',
+            r'([\w.]+(?:<[\w,\s.]+>)?)\s+(\w+)\s*=\s*(new\s+.+?)\s*;?$',
             stmt, re.DOTALL
         )
         if new_match and "new " in new_match.group(3):
@@ -623,12 +628,23 @@ class ApexParser:
             )
 
         # --- Type var = expr; --- (supports Map<String, String>, List<Account>, String[], etc.)
-        decl_match = re.match(r'(\w+(?:<[\w,\s]+>)?(?:\[\])?)\s+(\w+)\s*=\s*(.+?)\s*;?$', stmt)
+        decl_match = re.match(r'([\w.]+(?:<[\w,\s.]+>)?(?:\[\])?)\s+(\w+)\s*=\s*(.+?)\s*;?$', stmt)
         if decl_match:
             return VarDecl(
                 type_name=decl_match.group(1),
                 var_name=decl_match.group(2),
                 value=self._parse_expr(decl_match.group(3)),
+            )
+
+        # --- var += expr; (compound assignment) ---
+        compound_match = re.match(r'(\w+)\s*(\+=|-=|\*=|/=)\s*(.+?)\s*;?$', stmt)
+        if compound_match:
+            var_name = compound_match.group(1)
+            op = compound_match.group(2)[0]  # +, -, *, /
+            right = self._parse_expr(compound_match.group(3))
+            return Assign(
+                var_name=var_name,
+                value=BinaryOp(left=Variable(name=var_name), op=op, right=right),
             )
 
         # --- var = expr; ---
@@ -840,7 +856,7 @@ class ApexParser:
 
         # Chercher catch
         rest = stmt[i:].strip()
-        catch_match = re.match(r'catch\s*\(\s*(\w+)\s+(\w+)\s*\)\s*\{', rest)
+        catch_match = re.match(r'catch\s*\(\s*([\w.]+)\s+(\w+)\s*\)\s*\{', rest)
         catch_type = "Exception"
         catch_var = "e"
         catch_body = []

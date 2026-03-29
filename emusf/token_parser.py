@@ -178,17 +178,38 @@ def _parse_primary(stream: TokenStream) -> Expr:
     # Parenthèses or cast
     if tok.type == TokenType.LPAREN:
         stream.advance()
-        # Check for type cast: (Type) expr or (double) expr
-        if stream.at(TokenType.IDENT) and stream.peek(1).type == TokenType.RPAREN:
-            cast_type = stream.current().value
-            # Heuristic: if next-next is not an operator, it's a cast
+        # Check for type cast: (Type) expr, (Type<G>) expr, (Type<G,H>) expr
+        if stream.at(TokenType.IDENT):
             saved = stream.pos
-            stream.advance()  # consume type name
-            stream.advance()  # consume )
-            if stream.at_any(TokenType.IDENT, TokenType.INTEGER, TokenType.DECIMAL,
-                             TokenType.LPAREN, TokenType.NOT, TokenType.MINUS, TokenType.NEW):
-                inner = _parse_unary(stream)
-                return CastExpr(target_type=cast_type, expr=inner)
+            cast_type = stream.current().value
+            stream.advance()
+            # Handle generic types: Map<String, Object>, List<Account>, etc.
+            if stream.at(TokenType.LT):
+                depth = 1
+                stream.advance()
+                while depth > 0 and stream.current().type != TokenType.EOF:
+                    if stream.current().type == TokenType.LT:
+                        depth += 1
+                    elif stream.current().type == TokenType.GT:
+                        depth -= 1
+                    if depth > 0:
+                        cast_type += stream.current().value
+                        stream.advance()
+                    else:
+                        stream.advance()  # consume final >
+                cast_type = cast_type  # keep as simple type name for passthrough
+            # Qualified type: OuterClass.InnerClass
+            while stream.at(TokenType.DOT) and stream.peek(1).type == TokenType.IDENT:
+                cast_type += "." + stream.peek(1).value
+                stream.advance()  # consume .
+                stream.advance()  # consume InnerName
+            if stream.at(TokenType.RPAREN):
+                stream.advance()  # consume )
+                if stream.at_any(TokenType.IDENT, TokenType.INTEGER, TokenType.DECIMAL,
+                                 TokenType.LPAREN, TokenType.NOT, TokenType.MINUS,
+                                 TokenType.NEW, TokenType.STRING, TokenType.NULL):
+                    inner = _parse_unary(stream)
+                    return CastExpr(target_type=cast_type, expr=inner)
             # Not a cast — backtrack
             stream.pos = saved
         expr = parse_expression(stream)
