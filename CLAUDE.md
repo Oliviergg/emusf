@@ -42,6 +42,8 @@ python3 run_sf_tests.py
 
 **DML & triggers**: Triggers fire in order (before → DML → after). `Trigger.new`/`Trigger.old` are set as context. IDs auto-generated using Salesforce base-62 encoding with 3-char prefixes per SObject type (defined in `dml.py`).
 
+**Flows**: Salesforce Flows (`.flow-meta.xml`) are parsed by `flow_parser.py` into dataclass AST nodes (`flow_nodes.py`), then executed by `flow_interpreter.py` as a state machine. Supports assignments, decisions, loops, record CRUD, formulas, and variables.
+
 **SOQL → SQL**: Case conversion (CamelCase → lowercase), bind variable resolution (`:varName`), relationship subqueries via registered metadata in `SchemaRegistry`.
 
 **Test infrastructure**: pytest fixtures in `conftest.py` provide a `PgTestOrg` that truncates between tests. Apex-level tests use `ApexTestInterpreter` (in `test_runner.py`) which adds `System.assert()`/`System.assertEquals()`.
