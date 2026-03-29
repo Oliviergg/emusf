@@ -1,4 +1,4 @@
-"""Parser de triggers Apex → callbacks Python enregistrés sur FakeOrg."""
+"""Parser de triggers Apex → callbacks Python enregistrés sur l'org."""
 
 from __future__ import annotations
 
@@ -61,8 +61,15 @@ class TriggerParser:
         return name, sobject, events, body_stmts
 
 
-def load_trigger(org, path: str):
-    """Charge un fichier .trigger et enregistre les callbacks sur l'org."""
+def load_trigger(org, path: str, classes: dict = None):
+    """Charge un fichier .trigger et enregistre les callbacks sur l'org.
+
+    Args:
+        org: L'org (PgTestOrg, etc.)
+        path: Chemin vers le fichier .trigger
+        classes: Dict {name: ClassDef} de classes pré-chargées,
+                 injectées dans l'interpréteur du trigger.
+    """
     from .interpreter import ApexInterpreter
 
     with open(path) as f:
@@ -71,10 +78,14 @@ def load_trigger(org, path: str):
     parser = TriggerParser()
     name, sobject, events, body_stmts = parser.parse_trigger(source)
 
-    def make_callback(stmts):
+    def make_callback(stmts, shared_classes):
         def callback(records, old_records=None):
             interp = ApexInterpreter(org)
-            # Trigger.new et Trigger.old accessibles via FieldAccess
+            if shared_classes:
+                for cls_name, cls_def in shared_classes.items():
+                    interp.classes[cls_name] = cls_def
+                    for cname, (ctype, expr) in cls_def.constants.items():
+                        interp.variables["{}.{}".format(cls_name, cname)] = interp._eval(expr)
             interp.variables["Trigger"] = {
                 "new": records,
                 "old": old_records or [],
@@ -83,7 +94,7 @@ def load_trigger(org, path: str):
                 interp._exec_stmt(stmt)
         return callback
 
-    cb = make_callback(body_stmts)
+    cb = make_callback(body_stmts, classes)
     for event in events:
         org.add_trigger(event, sobject, cb)
 

@@ -1,16 +1,15 @@
 """Tests pour if/else et opérateurs de comparaison."""
 
-from emusf import FakeOrg, ApexParser, ApexInterpreter
+from emusf import ApexParser, ApexInterpreter
 
 
-def make_interp():
-    org = FakeOrg()
+def make_interp(org):
     org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
     return ApexInterpreter(org)
 
 
-def test_if_true():
-    interp = make_interp()
+def test_if_true(org):
+    interp = make_interp(org)
     parser = ApexParser()
     ast = parser.parse_class("""
     public class T {
@@ -26,8 +25,8 @@ def test_if_true():
     assert interp.output == ["ok"]
 
 
-def test_if_false_else():
-    interp = make_interp()
+def test_if_false_else(org):
+    interp = make_interp(org)
     parser = ApexParser()
     ast = parser.parse_class("""
     public class T {
@@ -45,8 +44,8 @@ def test_if_false_else():
     assert interp.output == ["nope"]
 
 
-def test_else_if():
-    interp = make_interp()
+def test_else_if(org):
+    interp = make_interp(org)
     parser = ApexParser()
     ast = parser.parse_class("""
     public class T {
@@ -66,8 +65,8 @@ def test_else_if():
     assert interp.output == ["2"]
 
 
-def test_comparison_operators():
-    interp = make_interp()
+def test_comparison_operators(org):
+    interp = make_interp(org)
     parser = ApexParser()
     ast = parser.parse_class("""
     public class T {
@@ -94,8 +93,8 @@ def test_comparison_operators():
     assert interp.output == ["gt", "lt", "gte", "lte", "neq"]
 
 
-def test_logical_and_or():
-    interp = make_interp()
+def test_logical_and_or(org):
+    interp = make_interp(org)
     parser = ApexParser()
     ast = parser.parse_class("""
     public class T {

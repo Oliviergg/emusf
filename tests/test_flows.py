@@ -1,7 +1,6 @@
 """Tests pour le simulateur de Flows Salesforce."""
 
 import os
-from emusf import FakeOrg
 from emusf.flow_parser import parse_flow, load_flow
 from emusf.flow_interpreter import FlowInterpreter, register_flow, load_and_register_flow
 
@@ -49,10 +48,9 @@ def test_parse_assignment_chain():
 # === Interprétation — FL_updateDate ===
 
 
-def test_run_fl_update_date():
+def test_run_fl_update_date(org):
     """Le flow doit mettre à jour LastModifiedDate__c et Description."""
     flow = load_flow(os.path.join(FLOWS_DIR, "FL_updateDate.flow-meta.xml"))
-    org = FakeOrg()
     record = {"Id": "001000000000001", "Name": "Test Corp"}
 
     interp = FlowInterpreter(org, flow)
@@ -65,10 +63,9 @@ def test_run_fl_update_date():
     assert record["Description"] == "Updated by flow"
 
 
-def test_fl_update_date_debug_log():
+def test_fl_update_date_debug_log(org):
     """Vérifie que le debug log trace les éléments traversés."""
     flow = load_flow(os.path.join(FLOWS_DIR, "FL_updateDate.flow-meta.xml"))
-    org = FakeOrg()
     record = {"Id": "001000000000001", "Name": "Test"}
 
     interp = FlowInterpreter(org, flow)
@@ -81,9 +78,8 @@ def test_fl_update_date_debug_log():
 # === Interprétation — FL_setStatus (décisions) ===
 
 
-def test_decision_high_value():
+def test_decision_high_value(org):
     flow = load_flow(os.path.join(FLOWS_DIR, "FL_setStatus.flow-meta.xml"))
-    org = FakeOrg()
     record = {"Id": "006000000000001", "Name": "Big Deal", "Amount": 200000}
 
     interp = FlowInterpreter(org, flow)
@@ -92,9 +88,8 @@ def test_decision_high_value():
     assert record["Priority__c"] == "High"
 
 
-def test_decision_medium_value():
+def test_decision_medium_value(org):
     flow = load_flow(os.path.join(FLOWS_DIR, "FL_setStatus.flow-meta.xml"))
-    org = FakeOrg()
     record = {"Id": "006000000000002", "Name": "Medium Deal", "Amount": 50000}
 
     interp = FlowInterpreter(org, flow)
@@ -103,9 +98,8 @@ def test_decision_medium_value():
     assert record["Priority__c"] == "Medium"
 
 
-def test_decision_low_value():
+def test_decision_low_value(org):
     flow = load_flow(os.path.join(FLOWS_DIR, "FL_setStatus.flow-meta.xml"))
-    org = FakeOrg()
     record = {"Id": "006000000000003", "Name": "Small Deal", "Amount": 500}
 
     interp = FlowInterpreter(org, flow)
@@ -114,12 +108,11 @@ def test_decision_low_value():
     assert record["Priority__c"] == "Low"
 
 
-# === Intégration avec FakeOrg (flow enregistré comme trigger) ===
+# === Intégration avec PgTestOrg (flow enregistré comme trigger) ===
 
 
-def test_flow_registered_on_insert():
+def test_flow_registered_on_insert(org):
     """Le flow before-save doit se déclencher sur un insert."""
-    org = FakeOrg()
     org.create_sobject("Account", {
         "Name": "TEXT",
         "LastModifiedDate__c": "TEXT",
@@ -139,9 +132,8 @@ def test_flow_registered_on_insert():
     assert rows[0]["Description"] == "Updated by flow"
 
 
-def test_flow_registered_on_update():
+def test_flow_registered_on_update(org):
     """Le flow before-save doit aussi se déclencher sur un update."""
-    org = FakeOrg()
     org.create_sobject("Account", {
         "Name": "TEXT",
         "LastModifiedDate__c": "TEXT",
@@ -161,9 +153,8 @@ def test_flow_registered_on_update():
     assert rows[0]["Description"] == "Updated by flow"
 
 
-def test_decision_flow_registered_as_trigger():
+def test_decision_flow_registered_as_trigger(org):
     """FL_setStatus doit fonctionner comme trigger before-save sur Opportunity."""
-    org = FakeOrg()
     org.create_sobject("Opportunity", {
         "Name": "TEXT",
         "Amount": "REAL",
@@ -183,7 +174,7 @@ def test_decision_flow_registered_as_trigger():
 # === Parsing inline ===
 
 
-def test_parse_flow_from_string():
+def test_parse_flow_from_string(org):
     """Parse un flow minimal depuis un string XML."""
     xml = """<?xml version="1.0" encoding="UTF-8"?>
     <Flow xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -214,7 +205,6 @@ def test_parse_flow_from_string():
     assert flow.start.object == "Contact"
 
     # Exécuter
-    org = FakeOrg()
     record = {"Id": "003000000000001", "FirstName": "Jean"}
     interp = FlowInterpreter(org, flow)
     interp.run(record=record)
@@ -224,7 +214,7 @@ def test_parse_flow_from_string():
 # === Variables et formules ===
 
 
-def test_flow_with_variables():
+def test_flow_with_variables(org):
     """Flow qui utilise des variables internes."""
     xml = """<?xml version="1.0" encoding="UTF-8"?>
     <Flow xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -270,14 +260,13 @@ def test_flow_with_variables():
         </assignments>
     </Flow>"""
     flow = parse_flow(xml, api_name="VarFlow")
-    org = FakeOrg()
     record = {"Id": "001000000000001", "Name": "Test"}
     interp = FlowInterpreter(org, flow)
     interp.run(record=record)
     assert record["Score__c"] == 5.0
 
 
-def test_flow_today_formula():
+def test_flow_today_formula(org):
     """Flow avec formule TODAY()."""
     xml = """<?xml version="1.0" encoding="UTF-8"?>
     <Flow xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -309,7 +298,6 @@ def test_flow_today_formula():
         </assignments>
     </Flow>"""
     flow = parse_flow(xml, api_name="DateFlow")
-    org = FakeOrg()
     record = {"Id": "001000000000001"}
     interp = FlowInterpreter(org, flow)
     interp.run(record=record)
@@ -321,7 +309,7 @@ def test_flow_today_formula():
 # === Entry conditions ===
 
 
-def test_flow_entry_conditions_pass():
+def test_flow_entry_conditions_pass(org):
     """Flow avec des conditions d'entrée qui passent."""
     xml = """<?xml version="1.0" encoding="UTF-8"?>
     <Flow xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -355,7 +343,6 @@ def test_flow_entry_conditions_pass():
         </assignments>
     </Flow>"""
     flow = parse_flow(xml, api_name="FilteredFlow")
-    org = FakeOrg()
 
     # Record qui matche le filtre
     record = {"Id": "001000000000001", "Type": "Customer"}
@@ -364,7 +351,7 @@ def test_flow_entry_conditions_pass():
     assert record["Tag__c"] == "VIP"
 
 
-def test_flow_entry_conditions_fail():
+def test_flow_entry_conditions_fail(org):
     """Flow avec des conditions d'entrée qui échouent — pas d'exécution."""
     xml = """<?xml version="1.0" encoding="UTF-8"?>
     <Flow xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -398,7 +385,6 @@ def test_flow_entry_conditions_fail():
         </assignments>
     </Flow>"""
     flow = parse_flow(xml, api_name="FilteredFlow")
-    org = FakeOrg()
 
     # Record qui ne matche PAS
     record = {"Id": "001000000000001", "Type": "Partner"}

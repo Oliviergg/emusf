@@ -3,12 +3,14 @@
 import sys
 import glob
 
-from emusf import FakeOrg, ApexParser, ApexInterpreter
+from emusf import PgTestOrg, ApexParser, ApexInterpreter
+from emusf.config import DSN
 from emusf.ast_printer import print_ast
 from emusf.trigger_parser import load_trigger
 
 # --- Setup org avec des données ---
-org = FakeOrg()
+org = PgTestOrg(DSN, schema="test")
+org.truncate_all()
 org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
 org.create_sobject("Contact", {"LastName": "TEXT", "AccountId": "TEXT"})
 
@@ -48,3 +50,7 @@ print()
 print("--- Exécution ---")
 interpreter = ApexInterpreter(org)
 interpreter._exec_block(ast)
+
+# Cleanup
+org.truncate_all()
+org.conn.close()

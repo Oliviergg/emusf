@@ -2,7 +2,8 @@
 
 from .parser import parse_soql, SOQLQuery
 from .schema import SchemaRegistry, RelationshipMeta
-from .org import FakeOrg
+from .dml import DmlResult, SOBJECT_PREFIX, generate_sf_id, decode62, encode62, sf_checksum
+from .pg_test_org import PgTestOrg
 from .context import ApexContext
 from .apex_parser import ApexParser
 from .interpreter import ApexInterpreter
@@ -15,7 +16,8 @@ __all__ = [
     "SOQLQuery",
     "SchemaRegistry",
     "RelationshipMeta",
-    "FakeOrg",
+    "DmlResult",
+    "PgTestOrg",
     "ApexContext",
     "parse_flow",
     "load_flow",

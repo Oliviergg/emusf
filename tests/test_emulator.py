@@ -1,28 +1,21 @@
 """Tests pour l'émulateur Salesforce."""
 
-from emusf import FakeOrg, ApexContext
+from emusf import ApexContext
 
 
-def make_org() -> FakeOrg:
-    """Crée une org de test avec Account, Contact, Opportunity."""
-    org = FakeOrg()
-
+def setup_org(org):
+    """Configure une org avec Account, Contact, Opportunity."""
     org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
+    org.create_sobject("Contact", {"LastName": "TEXT", "AccountId": "TEXT"})
     org.create_sobject(
-        "Contact", {"LastName": "TEXT", "AccountId": "TEXT"}
+        "Opportunity", {"Name": "TEXT", "Amount": "DOUBLE PRECISION", "AccountId": "TEXT"}
     )
-    org.create_sobject(
-        "Opportunity", {"Name": "TEXT", "Amount": "REAL", "AccountId": "TEXT"}
-    )
-
     org.register_relationship("Contacts", "Contact", "AccountId", "Account")
     org.register_relationship("Opportunities", "Opportunity", "AccountId", "Account")
 
-    return org
 
-
-def test_simple_soql():
-    org = make_org()
+def test_simple_soql(org):
+    setup_org(org)
     org.insert("Account", [
         {"Id": "001001", "Name": "Acme", "Active__c": 1},
         {"Id": "001002", "Name": "Boring Corp", "Active__c": 0},
@@ -35,8 +28,8 @@ def test_simple_soql():
     assert results[0]["Name"] == "Acme"
 
 
-def test_bind_variables():
-    org = make_org()
+def test_bind_variables(org):
+    setup_org(org)
     ctx = ApexContext(org)
 
     org.insert("Account", [
@@ -49,9 +42,9 @@ def test_bind_variables():
     assert results[0]["Active__c"] == 1
 
 
-def test_status_function():
+def test_status_function(org):
     """Simule AccountUtil.status(accountId)."""
-    org = make_org()
+    setup_org(org)
     ctx = ApexContext(org)
 
     org.insert("Account", [
@@ -71,8 +64,8 @@ def test_status_function():
     assert apex_status("001099") == "Not Found"
 
 
-def test_subquery_contacts():
-    org = make_org()
+def test_subquery_contacts(org):
+    setup_org(org)
     ctx = ApexContext(org)
 
     org.insert("Account", [{"Id": "001001", "Name": "Acme"}])
@@ -94,8 +87,8 @@ def test_subquery_contacts():
     assert last_names == {"Dupont", "Martin"}
 
 
-def test_multiple_subqueries():
-    org = make_org()
+def test_multiple_subqueries(org):
+    setup_org(org)
     ctx = ApexContext(org)
 
     org.insert("Account", [{"Id": "001001", "Name": "Acme"}])
@@ -119,9 +112,9 @@ def test_multiple_subqueries():
     assert results[0]["Opportunities"][0]["Amount"] == 50000
 
 
-def test_subquery_no_results():
+def test_subquery_no_results(org):
     """Account sans contacts."""
-    org = make_org()
+    setup_org(org)
     ctx = ApexContext(org)
 
     org.insert("Account", [{"Id": "001001", "Name": "Lonely Corp"}])

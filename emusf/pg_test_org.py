@@ -6,13 +6,19 @@ import uuid
 from typing import Optional, Callable
 
 from .pg_org import PgOrg, sf_to_pg_column
-from .org import DmlResult, SOBJECT_PREFIX
+from .dml import DmlResult, SOBJECT_PREFIX, DEFAULT_POD, DEFAULT_START_COUNTER, generate_sf_id
+from .schema import RelationshipMeta
+
+# Mapping types alternatifs → PostgreSQL pour create_sobject()
+_TYPE_MAP = {
+    "REAL": "DOUBLE PRECISION",
+}
 
 
 class PgTestOrg(PgOrg):
     """
     Org de test : INSERT/UPDATE/DELETE contre un schema PG dédié.
-    Supporte les triggers before/after comme FakeOrg.
+    Supporte les triggers before/after, création dynamique de tables.
     Rollback automatique entre les tests.
     """
 
@@ -21,6 +27,63 @@ class PgTestOrg(PgOrg):
         self.conn.autocommit = False  # On contrôle les transactions
         self._triggers = {}
         self._id_counters = {}
+        self._dirty_tables = set()  # Tables modified since last truncate
+        self._created_tables = set()  # Tables créées dynamiquement (à DROP au cleanup)
+
+    # --- Schema dynamique ---
+
+    def create_sobject(self, name: str, columns: dict):
+        """Crée (ou recrée) une table dans le schema test.
+
+        columns: {'Name': 'TEXT', 'Active__c': 'INTEGER DEFAULT 0', ...}
+        Les types courants sont mappés vers PG (ex: REAL → DOUBLE PRECISION).
+        Drop la table existante pour garantir le bon schéma.
+        """
+        table = name.lower()
+        col_defs = []
+        col_names = ["id"]
+        for col, dtype in columns.items():
+            pg_type = dtype
+            for src_type, pg_replacement in _TYPE_MAP.items():
+                pg_type = pg_type.replace(src_type, pg_replacement)
+            col_defs.append("{} {}".format(col.lower(), pg_type))
+            col_names.append(col.lower())
+
+        # Forcer autocommit pour le DDL (évite les locks entre connexions)
+        old_autocommit = self.conn.autocommit
+        try:
+            self.conn.rollback()  # fermer toute transaction ouverte
+            self.conn.autocommit = True
+            cur = self.conn.cursor()
+            cur.execute("DROP TABLE IF EXISTS {}.{} CASCADE".format(
+                self.schema_name, table))
+            cur.execute("CREATE TABLE {}.{} (id TEXT PRIMARY KEY, {})".format(
+                self.schema_name, table, ", ".join(col_defs)))
+            cur.close()
+        finally:
+            self.conn.autocommit = old_autocommit
+
+        self._tables[table] = col_names
+        self._created_tables.add(table)
+
+    def register_relationship(
+        self,
+        plural_name: str,
+        child_sobject: str,
+        fk_column: str,
+        parent_sobject: str,
+    ):
+        """Enregistre une relation parent-enfant (ex: Account → Contacts)."""
+        self.sf_schema.register(
+            RelationshipMeta(
+                plural_name=plural_name,
+                sobject_name=child_sobject,
+                fk_column=fk_column,
+                parent_sobject=parent_sobject,
+            )
+        )
+
+    # --- Isolation ---
 
     def begin(self):
         """Début d'un test — savepoint."""
@@ -35,38 +98,92 @@ class PgTestOrg(PgOrg):
         cur.close()
 
     def truncate_all(self):
-        """Vide toutes les tables du schema test."""
+        """Vide uniquement les tables qui ont été modifiées."""
         try:
             self.conn.rollback()
         except Exception:
             pass
+        if not self._dirty_tables:
+            self._id_counters = {}
+            return
         cur = self.conn.cursor()
-        for table in self._tables:
+        # Only truncate tables we actually wrote to
+        tables_to_clean = list(self._dirty_tables)
+        if tables_to_clean:
             try:
-                cur.execute("TRUNCATE {}.{} CASCADE".format(self.schema_name, table))
+                cur.execute("TRUNCATE {} CASCADE".format(
+                    ", ".join("{}.{}".format(self.schema_name, t) for t in tables_to_clean)
+                ))
             except Exception:
                 self.conn.rollback()
+                # Fallback: truncate one by one
+                for table in tables_to_clean:
+                    try:
+                        cur.execute("TRUNCATE {}.{} CASCADE".format(self.schema_name, table))
+                    except Exception:
+                        self.conn.rollback()
         self.conn.commit()
         cur.close()
+        self._dirty_tables = set()
         self._id_counters = {}
+        # Drop dynamically created tables (autocommit pour éviter les locks)
+        if self._created_tables:
+            self.conn.autocommit = True
+            cur = self.conn.cursor()
+            for table in self._created_tables:
+                try:
+                    cur.execute("DROP TABLE IF EXISTS {}.{} CASCADE".format(
+                        self.schema_name, table))
+                except Exception:
+                    pass
+            cur.close()
+            self.conn.autocommit = False
+            for table in self._created_tables:
+                self._tables.pop(table, None)
+            self._created_tables = set()
 
     # --- DML ---
 
+    def _auto_create_table(self, sobject: str, records: list):
+        """Crée automatiquement la table si elle n'existe pas (toutes colonnes TEXT)."""
+        table = sobject.lower()
+        if table in self._tables:
+            return
+        cols = {sf_to_pg_column(k): "TEXT" for r in records for k in r.keys()
+                if k != "Id" and not k.startswith("_")}
+        if not cols:
+            return
+        self.create_sobject(sobject, {k: v for k, v in cols.items()})
+
     def insert(self, sobject: str, records: list) -> DmlResult:
-        """Insert des enregistrements. Auto-génère les Id."""
+        """Insert des enregistrements. Auto-génère les Id. Auto-crée la table si absente."""
         for record in records:
             if "Id" not in record and "id" not in record:
                 record["Id"] = self._generate_id(sobject)
 
         self._fire_triggers("before_insert", sobject, records)
 
+        # Auto-create table if needed
+        self._auto_create_table(sobject, records)
+        self._dirty_tables.add(sobject.lower())
+
         cur = self.conn.cursor()
         for record in records:
             pg_record = {sf_to_pg_column(k): v for k, v in record.items()
                          if not k.startswith("_")}  # skip internal keys
-            # Filter to valid columns only
+            # Auto-add missing columns (ex: champs ajoutés par un trigger)
             valid_cols = set(self.get_columns(sobject))
             if valid_cols:
+                for col in pg_record:
+                    if col not in valid_cols:
+                        try:
+                            cur.execute("ALTER TABLE {}.{} ADD COLUMN {} TEXT".format(
+                                self.schema_name, sobject.lower(), col))
+                            self.conn.commit()
+                            self._tables.setdefault(sobject.lower(), []).append(col)
+                            valid_cols.add(col)
+                        except Exception:
+                            self.conn.rollback()
                 pg_record = {k: v for k, v in pg_record.items() if k in valid_cols}
             if not pg_record:
                 continue
@@ -97,6 +214,7 @@ class PgTestOrg(PgOrg):
     def update(self, sobject: str, records: list) -> DmlResult:
         """Update des enregistrements. Chaque record doit avoir un Id."""
         self._fire_triggers("before_update", sobject, records)
+        self._dirty_tables.add(sobject.lower())
 
         cur = self.conn.cursor()
         for record in records:
@@ -133,6 +251,7 @@ class PgTestOrg(PgOrg):
     def delete(self, sobject: str, record_ids: list) -> DmlResult:
         """Delete des enregistrements par Id."""
         self._fire_triggers("before_delete", sobject, [{"Id": rid} for rid in record_ids])
+        self._dirty_tables.add(sobject.lower())
 
         cur = self.conn.cursor()
         for rid in record_ids:
@@ -165,6 +284,6 @@ class PgTestOrg(PgOrg):
 
     def _generate_id(self, sobject: str) -> str:
         prefix = SOBJECT_PREFIX.get(sobject, "0XX")
-        count = self._id_counters.get(sobject, 0) + 1
+        count = self._id_counters.get(sobject, DEFAULT_START_COUNTER) + 1
         self._id_counters[sobject] = count
-        return "{}{}".format(prefix, str(count).zfill(12))
+        return generate_sf_id(prefix, DEFAULT_POD, count)

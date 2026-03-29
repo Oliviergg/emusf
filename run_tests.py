@@ -3,10 +3,10 @@
 import sys
 import os
 import glob
-from emusf import FakeOrg
-from emusf.test_runner import run_test_dir, run_test_file, ApexTestInterpreter
+from emusf import PgTestOrg
+from emusf.config import DSN
+from emusf.test_runner import ApexTestInterpreter
 from emusf.apex_parser import ApexParser
-from emusf.interpreter import ApexInterpreter
 
 # Couleurs
 GREEN = "\033[32m"
@@ -14,7 +14,8 @@ RED = "\033[31m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-org = FakeOrg()
+org = PgTestOrg(DSN, schema="test")
+org.truncate_all()
 org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
 org.create_sobject("Contact", {"LastName": "TEXT", "FirstName": "TEXT", "AccountId": "TEXT"})
 org.register_relationship("Contacts", "Contact", "AccountId", "Account")
@@ -55,6 +56,12 @@ for path in files:
     p = ApexParser()
     ast = p.parse_class(source, "run")
 
+    # Nettoyer les données entre les tests
+    org.truncate_all()
+    org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
+    org.create_sobject("Contact", {"LastName": "TEXT", "FirstName": "TEXT", "AccountId": "TEXT"})
+    org.register_relationship("Contacts", "Contact", "AccountId", "Account")
+
     interp = ApexTestInterpreter(org)
     # Charger les helpers dans l'interpréteur
     for name, cls in helper_classes.items():
@@ -90,5 +97,8 @@ if all_ok:
     print(GREEN + "✓ " + RESET + summary)
 else:
     print(RED + "✗ " + RESET + summary)
+
+org.truncate_all()
+org.conn.close()
 
 sys.exit(0 if all_ok else 1)

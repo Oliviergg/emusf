@@ -1,7 +1,7 @@
 [project]
 name = "emusf"
 version = "0.1.0"
-description = "Émulateur Salesforce - Apex/SOQL local avec SQLite"
+description = "Émulateur Salesforce - Apex/SOQL local avec PostgreSQL"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

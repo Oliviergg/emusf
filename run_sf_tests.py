@@ -21,9 +21,7 @@ DIM = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-SF_CLASSES = "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/classes"
-SFDX_OBJECTS = "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/objects"
-DSN = "host=localhost port=6000 user=postgres password=dcc948df3501919f709cb976fa2cb24000be8b12 dbname=biup"
+from emusf.config import DSN, SF_CLASSES, SFDX_OBJECTS
 
 
 class SfTestInterpreter(ApexTestInterpreter):

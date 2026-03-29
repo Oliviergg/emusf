@@ -1,7 +1,5 @@
 """ApexContext - simule le contexte d'exécution Apex."""
 
-from .org import FakeOrg
-
 
 class ApexContext:
     """
@@ -9,7 +7,7 @@ class ApexContext:
     Stocke les variables locales et donne accès à l'org.
     """
 
-    def __init__(self, org: FakeOrg):
+    def __init__(self, org):
         self.org = org
         self.variables: dict = {}
 

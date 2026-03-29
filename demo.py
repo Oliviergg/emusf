@@ -1,13 +1,15 @@
 """Démo de l'émulateur Salesforce."""
 
-from emusf import FakeOrg, ApexContext
+from emusf import PgTestOrg, ApexContext
+from emusf.config import DSN
 
 
 # --- Setup org ---
-org = FakeOrg()
+org = PgTestOrg(DSN, schema="test")
+org.truncate_all()
 org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
 org.create_sobject("Contact", {"LastName": "TEXT", "AccountId": "TEXT"})
-org.create_sobject("Opportunity", {"Name": "TEXT", "Amount": "REAL", "AccountId": "TEXT"})
+org.create_sobject("Opportunity", {"Name": "TEXT", "Amount": "DOUBLE PRECISION", "AccountId": "TEXT"})
 
 org.register_relationship("Contacts", "Contact", "AccountId", "Account")
 org.register_relationship("Opportunities", "Opportunity", "AccountId", "Account")
@@ -60,3 +62,7 @@ for acc in results:
         print(f"  └ Contact: {c['LastName']}")
     for o in acc.get("Opportunities", []):
         print(f"  └ Opportunity: {o['Name']} ({o['Amount']}€)")
+
+# Cleanup
+org.truncate_all()
+org.conn.close()
