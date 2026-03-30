@@ -449,6 +449,18 @@ class ApexInterpreter:
             # ApexPages.severity → enum marker
             if expr.obj == "ApexPages" and expr.field.lower() == "severity":
                 return {"_type": "ApexPages.severity"}
+
+            # FormulaEval namespace — enums and classes
+            if expr.obj == "FormulaEval":
+                field = expr.field
+                if field == "FormulaReturnType":
+                    return {"_type": "FormulaEval.FormulaReturnType"}
+                if field == "FormulaGlobal":
+                    return {"_type": "FormulaEval.FormulaGlobal"}
+                if field == "FormulaBuilder":
+                    return {"_type": "FormulaEval.FormulaBuilderClass"}
+                if field == "FormulaInstance":
+                    return {"_type": "FormulaEval.FormulaInstanceClass"}
             # system.today() parsé comme FieldAccess puis ChainedCall
             if expr.obj.lower() == "system" and expr.field.lower() == "today":
                 from datetime import date
@@ -648,6 +660,27 @@ class ApexInterpreter:
             if isinstance(target, dict) and target.get("_type") == "ApexPages.severity":
                 return expr.method  # "INFO", "ERROR", "WARNING", "CONFIRM"
 
+            # FormulaEval enums
+            if isinstance(target, dict) and target.get("_type") == "FormulaEval.FormulaReturnType":
+                return expr.method  # STRING, BOOLEAN, NUMBER, DATE, DATETIME
+            if isinstance(target, dict) and target.get("_type") == "FormulaEval.FormulaGlobal":
+                return expr.method  # LABEL, PROFILE, USER
+
+            # FormulaEval.FormulaBuilder.builder() → static call
+            if isinstance(target, dict) and target.get("_type") == "FormulaEval.FormulaBuilderClass":
+                if expr.method == "builder":
+                    return {"_type": "FormulaBuilder", "_context_type": None,
+                            "_return_type": None, "_formula": None,
+                            "_globals": [], "_template": False}
+
+            # FormulaBuilder fluent methods
+            if isinstance(target, dict) and target.get("_type") == "FormulaBuilder":
+                return self._call_formula_builder(target, expr.method, args)
+
+            # FormulaInstance methods
+            if isinstance(target, dict) and target.get("_type") == "FormulaInstance":
+                return self._call_formula_instance(target, expr.method, args)
+
             # new ApexPages.message(...) parsé comme NewSObject("ApexPages").message(...)
             if (isinstance(target, dict) and target.get("_sobject_type") == "ApexPages"
                     and expr.method.lower() == "message"):
@@ -718,7 +751,7 @@ class ApexInterpreter:
         method = call.method
 
         # Null-safe: appeler une méthode sur null retourne null
-        if obj is None and call.obj not in self.classes and call.obj not in ("_self", "_super") and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits", "EventBus", "Type", "UUID") and not call.obj.endswith("__c"):
+        if obj is None and call.obj not in self.classes and call.obj not in ("_self", "_super") and call.obj not in ("String", "Integer", "System", "Test", "Date", "DateTime", "Pattern", "Matcher", "Math", "JSON", "EncodingUtil", "Crypto", "Blob", "blob", "Database", "Schema", "URL", "UserInfo", "Http", "HttpRequest", "HttpResponse", "Limits", "EventBus", "Type", "UUID", "Formula", "FormulaEval") and not call.obj.endswith("__c"):
             # Vérifier aussi si c'est une méthode de la classe courante
             if not (self._current_class and call.method in self._current_class.methods):
                 return None
@@ -944,6 +977,29 @@ class ApexInterpreter:
             elif method == "ceil":
                 import math
                 return int(math.ceil(args[0])) if args else 0
+
+        # Formula.builder() — System.Formula shorthand
+        if call.obj == "Formula":
+            if method == "builder":
+                return {"_type": "FormulaBuilder", "_context_type": None,
+                        "_return_type": None, "_formula": None,
+                        "_globals": [], "_template": False}
+            elif method == "recalculateFormulas":
+                records = args[0] if args else []
+                results = []
+                for rec in (records if isinstance(records, list) else [records]):
+                    results.append({
+                        "_type": "FormulaRecalcResult",
+                        "_record": rec,
+                        "_success": True,
+                        "_errors": [],
+                    })
+                return results
+
+        # FormulaEval.FormulaBuilder.builder() — explicit namespace
+        if call.obj == "FormulaEval":
+            if method == "FormulaBuilder":
+                return {"_type": "FormulaEval.FormulaBuilderClass"}
 
         # System static methods
         if call.obj == "System":
@@ -1340,6 +1396,23 @@ class ApexInterpreter:
                 m["_match"] = match
                 return match is not None
 
+        # FormulaBuilder instance methods (fluent)
+        if m.get("_type") == "FormulaBuilder":
+            return self._call_formula_builder(m, method, args)
+
+        # FormulaInstance methods
+        if m.get("_type") == "FormulaInstance":
+            return self._call_formula_instance(m, method, args)
+
+        # FormulaRecalcResult
+        if m.get("_type") == "FormulaRecalcResult":
+            if method == "isSuccess":
+                return m.get("_success", True)
+            if method == "getSObject":
+                return m.get("_record", {})
+            if method == "getErrors":
+                return m.get("_errors", [])
+
         # SystemLabel — System.Label.XXX returns ''
         if m.get("_type") == "SystemLabel":
             return ""  # All custom labels return empty string
@@ -1513,6 +1586,128 @@ class ApexInterpreter:
         if method in m:
             return m[method]
         raise Exception("Map.{}() non supporté".format(method))
+
+    # ------------------------------------------------------------------
+    # FormulaEval namespace support
+    # ------------------------------------------------------------------
+
+    def _call_formula_builder(self, builder, method, args):
+        """Méthodes fluentes du FormulaBuilder — retourne toujours le builder."""
+        if method == "withType":
+            builder["_context_type"] = args[0] if args else None
+            return builder
+        if method == "withReturnType":
+            builder["_return_type"] = args[0] if args else None
+            return builder
+        if method == "withFormula":
+            builder["_formula"] = args[0] if args else None
+            return builder
+        if method == "withGlobalVariables":
+            builder["_globals"] = args[0] if args else []
+            return builder
+        if method == "parseAsTemplate":
+            builder["_template"] = bool(args[0]) if args else False
+            return builder
+        if method == "build":
+            formula_expr = builder.get("_formula", "")
+            if not formula_expr:
+                raise Exception("FormulaValidationException: formula expression is required")
+            # Extraire les champs référencés
+            import re
+            refs = set()
+            # Références dans les formules normales : identifiants simples
+            for tok in re.finditer(r'[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*', formula_expr):
+                word = tok.group()
+                upper = word.upper()
+                # Exclure les mots-clés et fonctions
+                if upper not in ("AND", "OR", "NOT", "IF", "ISBLANK", "ISNULL",
+                                 "ISPICKVAL", "TRUE", "FALSE", "NULL", "LEN", "TEXT",
+                                 "TRIM", "UPPER", "LOWER", "LEFT", "RIGHT", "MID",
+                                 "SUBSTITUTE", "CONTAINS", "BEGINS", "FIND",
+                                 "CONCATENATE", "NOW", "TODAY", "YEAR", "MONTH", "DAY",
+                                 "DATE", "ABS", "CEILING", "FLOOR", "ROUND", "MAX",
+                                 "MIN", "MOD", "SQRT", "LOG", "LN", "EXP", "VALUE",
+                                 "CASE", "BLANKVALUE", "NULLVALUE", "BR", "REGEX",
+                                 "HYPERLINK", "IMAGE", "URLFOR", "ADDMONTHS",
+                                 "DATETIMEVALUE", "DATEVALUE", "INCLUDES"):
+                    refs.add(word)
+            # Merge fields en mode template
+            if builder.get("_template"):
+                for m in re.finditer(r'\{!([^}]+)\}', formula_expr):
+                    refs.add(m.group(1))
+            return {
+                "_type": "FormulaInstance",
+                "_formula": formula_expr,
+                "_return_type": builder.get("_return_type"),
+                "_context_type": builder.get("_context_type"),
+                "_globals": builder.get("_globals", []),
+                "_template": builder.get("_template", False),
+                "_referenced_fields": refs,
+            }
+        raise Exception("FormulaBuilder.{}() non supporté".format(method))
+
+    def _call_formula_instance(self, instance, method, args):
+        """Méthodes de FormulaInstance — evaluate() et getReferencedFields()."""
+        if method == "getReferencedFields":
+            return instance.get("_referenced_fields", set())
+        if method == "evaluate":
+            context_obj = args[0] if args else {}
+            formula_expr = instance["_formula"]
+            is_template = instance.get("_template", False)
+
+            from .formula_engine import FormulaEngine, resolve_merge_fields
+
+            # Construire le resolver depuis l'objet contexte
+            def _resolver(ref):
+                if isinstance(context_obj, dict):
+                    # Chercher le champ directement
+                    if ref in context_obj:
+                        return context_obj[ref]
+                    # Chemin pointé
+                    parts = ref.split(".")
+                    obj = context_obj
+                    for p in parts:
+                        if isinstance(obj, dict) and p in obj:
+                            obj = obj[p]
+                        else:
+                            # Case-insensitive fallback
+                            if isinstance(obj, dict):
+                                for k, v in obj.items():
+                                    if k.lower() == p.lower():
+                                        obj = v
+                                        break
+                                else:
+                                    return None
+                            else:
+                                return None
+                    return obj
+                return None
+
+            if is_template:
+                # Mode template : résoudre {!Field} en texte
+                return resolve_merge_fields(formula_expr, _resolver)
+
+            engine = FormulaEngine(_resolver)
+            result = engine.evaluate(formula_expr)
+
+            # Coercion selon le return type
+            ret_type = instance.get("_return_type", "").upper() if instance.get("_return_type") else ""
+            if ret_type == "BOOLEAN":
+                return bool(result)
+            if ret_type == "STRING":
+                return str(result) if result is not None else ""
+            if ret_type == "NUMBER":
+                if result is None:
+                    return 0
+                if isinstance(result, (int, float)):
+                    return result
+                try:
+                    return float(result)
+                except (ValueError, TypeError):
+                    return 0
+
+            return result
+        raise Exception("FormulaInstance.{}() non supporté".format(method))
 
     def _resolve_class_chain(self, class_def):
         """Retourne la liste [class, parent, grandparent, ...] pour l'héritage."""
