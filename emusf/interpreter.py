@@ -36,6 +36,23 @@ class ContinueException(Exception):
     pass
 
 
+def _common_prefix_len(a, b):
+    i = 0
+    while i < len(a) and i < len(b) and a[i] == b[i]:
+        i += 1
+    return i if i < max(len(a), len(b)) else -1
+
+
+def _common_prefix(a, b):
+    n = _common_prefix_len(a, b)
+    return a[:n] if n >= 0 else a
+
+
+def _unescape_html(s):
+    import html
+    return html.unescape(s)
+
+
 class ApexInterpreter:
     """
     Interprète un AST Apex.
@@ -883,6 +900,12 @@ class ApexInterpreter:
                 return v is not None and isinstance(v, str) and v.strip() != ""
             elif method == "valueOf":
                 return str(args[0]) if args else ""
+            elif method == "isEmpty":
+                v = args[0] if args else None
+                return v is None or (isinstance(v, str) and v == "")
+            elif method == "isNotEmpty":
+                v = args[0] if args else None
+                return v is not None and isinstance(v, str) and v != ""
             elif method == "join":
                 if len(args) >= 2:
                     lst = args[0]
@@ -890,6 +913,17 @@ class ApexInterpreter:
                     if isinstance(lst, list):
                         return sep.join(str(x) for x in lst)
                 return ""
+            elif method == "format":
+                if len(args) >= 2:
+                    template = args[0] if args else ''
+                    params = args[1] if len(args) > 1 else []
+                    if isinstance(params, list):
+                        for i, p in enumerate(params):
+                            template = template.replace('{' + str(i) + '}', str(p) if p is not None else 'null')
+                    return template
+                return args[0] if args else ''
+            elif method == "fromCharArray":
+                return ''.join(chr(int(c)) for c in args[0]) if args and isinstance(args[0], list) else ''
 
         # Integer static methods
         if call.obj == "Integer":
@@ -1241,7 +1275,33 @@ class ApexInterpreter:
         raise Exception("Impossible d'appeler .{}() sur {}".format(method, type(obj).__name__))
 
     def _call_string_method(self, s, method, args):
+        import re as _re
+
+        def _split():
+            if args and args[0] == '':
+                return list(s)
+            if len(args) >= 2:
+                return _re.split(args[0], s, maxsplit=int(args[1]) - 1) if int(args[1]) > 0 else _re.split(args[0], s)
+            return _re.split(args[0], s) if args else [s]
+
+        def _substring_between():
+            if len(args) >= 2:
+                start = s.find(args[0])
+                if start == -1:
+                    return None
+                start += len(args[0])
+                end = s.find(args[1], start)
+                return s[start:end] if end != -1 else None
+            tag = args[0] if args else ''
+            start = s.find(tag)
+            if start == -1:
+                return None
+            start += len(tag)
+            end = s.find(tag, start)
+            return s[start:end] if end != -1 else None
+
         methods = {
+            # --- Existants ---
             "length": lambda: len(s),
             "contains": lambda: args[0] in s if args else False,
             "startsWith": lambda: s.startswith(args[0]) if args else False,
@@ -1250,15 +1310,15 @@ class ApexInterpreter:
             "toUpperCase": lambda: s.upper(),
             "trim": lambda: s.strip(),
             "substring": lambda: s[int(args[0]):int(args[1])] if len(args) >= 2 else s[int(args[0]):],
-            "indexOf": lambda: s.find(args[0]) if args else -1,
+            "indexOf": lambda: s.find(args[0], int(args[1])) if len(args) >= 2 else (s.find(args[0]) if args else -1),
             "replace": lambda: s.replace(args[0], args[1]) if len(args) >= 2 else s,
-            "split": lambda: list(s) if args and args[0] == '' else (__import__('re').split(args[0], s) if args else [s]),
+            "split": _split,
             "left": lambda: s[:int(args[0])] if args else s,
             "right": lambda: s[-int(args[0]):] if args else s,
             "removeStart": lambda: s[len(args[0]):] if args and s.startswith(args[0]) else s,
             "removeEnd": lambda: s[:-len(args[0])] if args and s.endswith(args[0]) else s,
             "leftPad": lambda: s.rjust(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
-            "replaceAll": lambda: __import__('re').sub(args[0], args[1], s) if len(args) >= 2 else s,
+            "replaceAll": lambda: _re.sub(args[0], args[1], s) if len(args) >= 2 else s,
             "equals": lambda: s == args[0] if args else False,
             "equalsIgnoreCase": lambda: s.lower() == args[0].lower() if args and isinstance(args[0], str) else False,
             "charAt": lambda: s[int(args[0])] if args else '',
@@ -1269,6 +1329,65 @@ class ApexInterpreter:
             "normalizeSpace": lambda: " ".join(s.split()),
             "countMatches": lambda: s.count(args[0]) if args else 0,
             "size": lambda: len(s),
+            # --- Nouveaux : recherche & comparaison ---
+            "containsIgnoreCase": lambda: args[0].lower() in s.lower() if args and isinstance(args[0], str) else False,
+            "startsWithIgnoreCase": lambda: s.lower().startswith(args[0].lower()) if args and isinstance(args[0], str) else False,
+            "endsWithIgnoreCase": lambda: s.lower().endswith(args[0].lower()) if args and isinstance(args[0], str) else False,
+            "indexOfIgnoreCase": lambda: s.lower().find(args[0].lower(), int(args[1])) if len(args) >= 2 else (s.lower().find(args[0].lower()) if args else -1),
+            "lastIndexOf": lambda: s.rfind(args[0], 0, int(args[1]) + 1) if len(args) >= 2 else (s.rfind(args[0]) if args else -1),
+            "lastIndexOfIgnoreCase": lambda: s.lower().rfind(args[0].lower(), 0, int(args[1]) + 1) if len(args) >= 2 else (s.lower().rfind(args[0].lower()) if args else -1),
+            "compareTo": lambda: (0 if s == args[0] else (-1 if s < args[0] else 1)) if args else 0,
+            # --- Nouveaux : manipulation ---
+            "mid": lambda: s[int(args[0]):int(args[0]) + int(args[1])] if len(args) >= 2 else s,
+            "reverse": lambda: s[::-1],
+            "rightPad": lambda: s.ljust(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
+            "center": lambda: s.center(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
+            "remove": lambda: s.replace(args[0], '') if args else s,
+            "removeStartIgnoreCase": lambda: s[len(args[0]):] if args and s.lower().startswith(args[0].lower()) else s,
+            "removeEndIgnoreCase": lambda: s[:-len(args[0])] if args and s.lower().endswith(args[0].lower()) else s,
+            "replaceFirst": lambda: _re.sub(args[0], args[1], s, count=1) if len(args) >= 2 else s,
+            "uncapitalize": lambda: s[0].lower() + s[1:] if s else s,
+            "swapCase": lambda: s.swapcase(),
+            "deleteWhitespace": lambda: ''.join(c for c in s if not c.isspace()),
+            "stripHtmlTags": lambda: _re.sub(r'<[^>]+>', '', s),
+            # --- Nouveaux : substring helpers ---
+            "substringAfter": lambda: s[s.find(args[0]) + len(args[0]):] if args and s.find(args[0]) != -1 else '',
+            "substringAfterLast": lambda: s[s.rfind(args[0]) + len(args[0]):] if args and s.rfind(args[0]) != -1 else '',
+            "substringBefore": lambda: s[:s.find(args[0])] if args and s.find(args[0]) != -1 else s,
+            "substringBeforeLast": lambda: s[:s.rfind(args[0])] if args and s.rfind(args[0]) != -1 else s,
+            "substringBetween": _substring_between,
+            # --- Nouveaux : tests de contenu ---
+            "isAllLowerCase": lambda: s.islower() if s else False,
+            "isAllUpperCase": lambda: s.isupper() if s else False,
+            "isAlpha": lambda: s.isalpha() if s else False,
+            "isAlphanumeric": lambda: s.isalnum() if s else False,
+            "isAlphaSpace": lambda: all(c.isalpha() or c == ' ' for c in s) if s else False,
+            "isAlphanumericSpace": lambda: all(c.isalnum() or c == ' ' for c in s) if s else False,
+            "isNumeric": lambda: s.isdigit() if s else False,
+            "isNumericSpace": lambda: all(c.isdigit() or c == ' ' for c in s) if s else False,
+            "isWhitespace": lambda: s.isspace() if s else True,
+            "containsWhitespace": lambda: any(c.isspace() for c in s),
+            "containsAny": lambda: any(c in s for c in args[0]) if args else False,
+            "containsNone": lambda: not any(c in s for c in args[0]) if args else True,
+            "containsOnly": lambda: all(c in args[0] for c in s) if args else False,
+            "isAsciiPrintable": lambda: all(32 <= ord(c) <= 126 for c in s) if s else True,
+            # --- Nouveaux : char & code ---
+            "getChars": lambda: [ord(c) for c in s],
+            "hashCode": lambda: hash(s),
+            "indexOfChar": lambda: s.find(chr(int(args[0])), int(args[1])) if len(args) >= 2 else (s.find(chr(int(args[0]))) if args else -1),
+            # --- Nouveaux : distance ---
+            "difference": lambda: args[0][len(_common_prefix(s, args[0])):] if args else '',
+            "indexOfDifference": lambda: _common_prefix_len(s, args[0]) if args else -1,
+            # --- Escape / unescape ---
+            "escapeHtml4": lambda: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'),
+            "escapeHtml3": lambda: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'),
+            "escapeXml": lambda: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;'),
+            "escapeJava": lambda: s.encode('unicode_escape').decode('ascii'),
+            "escapeEcmaScript": lambda: s.encode('unicode_escape').decode('ascii').replace("'", "\\'"),
+            "unescapeHtml4": lambda: _unescape_html(s),
+            "unescapeHtml3": lambda: _unescape_html(s),
+            "unescapeXml": lambda: s.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&apos;', "'"),
+            "unescapeJava": lambda: s.encode().decode('unicode_escape'),
         }
         if method in methods:
             return methods[method]()
