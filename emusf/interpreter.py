@@ -1078,11 +1078,6 @@ class ApexInterpreter:
                 soql = args[0] if args else ""
                 return self.org.execute_soql("[{}]".format(soql), context=self.variables)
 
-        # Blob static methods
-        if call.obj in ("Blob", "blob"):
-            if method == "valueOf":
-                return args[0] if args else ""
-
         # EncodingUtil static methods
         if call.obj == "EncodingUtil":
             if method == "base64Encode":
@@ -1222,6 +1217,151 @@ class ApexInterpreter:
         if call.obj == "System" and method == "schedule":
             return "FakeJobId_001"
 
+        # UserInfo static methods
+        if call.obj == "UserInfo":
+            _userinfo = {
+                "getUserId": "005000000000001AAA",
+                "getProfileId": "00e000000000001AAA",
+                "getUserRoleId": "00E000000000001AAA",
+                "getName": "Test User",
+                "getFirstName": "Test",
+                "getLastName": "User",
+                "getUserName": "testuser@example.com",
+                "getUserEmail": "testuser@example.com",
+                "getOrganizationId": "00D000000000001AAA",
+                "getOrganizationName": "Test Org",
+                "getDefaultCurrency": "EUR",
+                "getLocale": "fr_FR",
+                "getLanguage": "fr",
+                "getTimeZone": {"_type": "TimeZone", "id": "Europe/Paris"},
+                "getSessionId": "fakesession000000000000000001",
+                "isMultiCurrencyOrganization": False,
+                "getUiTheme": "Theme4d",
+                "getUiThemeDisplayed": "Theme4d",
+            }
+            if method in _userinfo:
+                return _userinfo[method]
+            return None
+
+        # Limits static methods
+        if call.obj == "Limits":
+            # Compteurs internes
+            if not hasattr(self, '_limits'):
+                self._limits = {"queries": 0, "dml": 0, "soql_rows": 0, "dml_rows": 0,
+                                "cpu_time": 0, "heap_size": 0, "callouts": 0, "future_calls": 0,
+                                "queueable_jobs": 0, "email_invocations": 0}
+            _limit_getters = {
+                "getQueries": lambda: self._limits["queries"],
+                "getDmlStatements": lambda: self._limits["dml"],
+                "getSoqlQueryRows": lambda: self._limits.get("soql_rows", 0),
+                "getDmlRows": lambda: self._limits["dml_rows"],
+                "getCpuTime": lambda: self._limits["cpu_time"],
+                "getHeapSize": lambda: self._limits["heap_size"],
+                "getCallouts": lambda: self._limits["callouts"],
+                "getFutureCalls": lambda: self._limits["future_calls"],
+                "getQueueableJobs": lambda: self._limits["queueable_jobs"],
+                "getEmailInvocations": lambda: self._limits["email_invocations"],
+                # Limites max (governor limits)
+                "getLimitQueries": lambda: 100,
+                "getLimitDmlStatements": lambda: 150,
+                "getLimitSoqlQueryRows": lambda: 50000,
+                "getLimitDmlRows": lambda: 10000,
+                "getLimitCpuTime": lambda: 10000,
+                "getLimitHeapSize": lambda: 6000000,
+                "getLimitCallouts": lambda: 100,
+                "getLimitFutureCalls": lambda: 50,
+                "getLimitQueueableJobs": lambda: 50,
+                "getLimitEmailInvocations": lambda: 10,
+            }
+            if method in _limit_getters:
+                return _limit_getters[method]()
+            return 0
+
+        # Schema static methods
+        if call.obj == "Schema":
+            if method == "getGlobalDescribe":
+                # Retourne un Map<String, SObjectType> basé sur les tables connues de l'org
+                try:
+                    tables = self.org.get_sobject_names() if hasattr(self.org, 'get_sobject_names') else []
+                except Exception:
+                    tables = []
+                return {t: {"_type": "SObjectType", "name": t} for t in tables}
+            if method == "describeSObjects":
+                return [{"_type": "DescribeSObjectResult", "name": a} for a in (args[0] if args and isinstance(args[0], list) else [])]
+
+        # Schema.SObjectType.XXX — e.g. Schema.SObjectType.Account
+        if call.obj == "SObjectType":
+            sobject_name = method
+            return {"_type": "SObjectType", "name": sobject_name}
+
+        # Blob static methods (compléter)
+        if call.obj in ("Blob", "blob"):
+            if method == "valueOf":
+                val = str(args[0]) if args else ""
+                return {"_type": "Blob", "_data": val.encode('utf-8')}
+            if method == "toPdf":
+                val = str(args[0]) if args else ""
+                return {"_type": "Blob", "_data": val.encode('utf-8')}
+
+        # Id static methods
+        if call.obj == "Id" and method == "valueOf":
+            return str(args[0]) if args else None
+
+        # Decimal static methods
+        if call.obj == "Decimal":
+            if method == "valueOf":
+                try:
+                    return float(args[0]) if args else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
+        # Double static methods
+        if call.obj == "Double":
+            if method == "valueOf":
+                try:
+                    return float(args[0]) if args else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
+        # Assert class (API 59+)
+        if call.obj == "Assert":
+            if method in ("isTrue", "istrue"):
+                if not args or not args[0]:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected true"
+                    raise ApexException(msg)
+                return None
+            if method in ("isFalse", "isfalse"):
+                if args and args[0]:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected false"
+                    raise ApexException(msg)
+                return None
+            if method in ("areEqual", "areequal"):
+                if len(args) >= 2 and args[0] != args[1]:
+                    msg = args[2] if len(args) > 2 else "Assertion failed: {} != {}".format(args[0], args[1])
+                    raise ApexException(msg)
+                return None
+            if method in ("areNotEqual", "arenotequal"):
+                if len(args) >= 2 and args[0] == args[1]:
+                    msg = args[2] if len(args) > 2 else "Assertion failed: values are equal: {}".format(args[0])
+                    raise ApexException(msg)
+                return None
+            if method in ("isNotNull", "isnotnull"):
+                if not args or args[0] is None:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected non-null"
+                    raise ApexException(msg)
+                return None
+            if method in ("isNull", "isnull"):
+                if args and args[0] is not None:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected null"
+                    raise ApexException(msg)
+                return None
+            if method in ("isInstanceOfType", "isinstanceoftype"):
+                # Simplifié — no-op dans l'émulateur
+                return None
+            if method == "fail":
+                msg = args[0] if args else "Assertion failed"
+                raise ApexException(msg)
+
         # Custom Settings: SomeObject__c.getInstance('name')
         if call.obj.endswith("__c") and method == "getInstance":
             sobject = call.obj
@@ -1266,11 +1406,27 @@ class ApexInterpreter:
         if isinstance(obj, dict):
             return self._call_map_method(obj, method, args)
         if isinstance(obj, (int, float)):
-            # Numeric methods
-            if method == "intValue":
-                return int(obj)
-            if method == "format":
-                return str(obj)
+            _num_methods = {
+                "intValue": lambda: int(obj),
+                "longValue": lambda: int(obj),
+                "doubleValue": lambda: float(obj),
+                "format": lambda: str(obj),
+                "abs": lambda: abs(obj),
+                "setScale": lambda: round(float(obj), int(args[0])) if args else float(obj),
+                "scale": lambda: len(str(float(obj)).split('.')[-1]) if '.' in str(float(obj)) else 0,
+                "precision": lambda: len(str(abs(obj)).replace('.', '').lstrip('0')) or 1,
+                "round": lambda: round(obj),
+                "stripTrailingZeros": lambda: float(str(float(obj)).rstrip('0').rstrip('.')),
+                "toPlainString": lambda: str(obj),
+                "valueOf": lambda: obj,
+                "compareTo": lambda: (0 if obj == args[0] else (-1 if obj < args[0] else 1)) if args else 0,
+                "min": lambda: min(obj, args[0]) if args else obj,
+                "max": lambda: max(obj, args[0]) if args else obj,
+                "pow": lambda: obj ** int(args[0]) if args else obj,
+                "divide": lambda: float(obj) / float(args[0]) if args and len(args) >= 2 else float(obj) / float(args[0]) if args else float(obj),
+            }
+            if method in _num_methods:
+                return _num_methods[method]()
             return obj
         raise Exception("Impossible d'appeler .{}() sur {}".format(method, type(obj).__name__))
 
@@ -1442,8 +1598,12 @@ class ApexInterpreter:
         if m.get("_type") == "Matcher":
             import re as _re
             if method == "find":
-                match = m["_compiled"].search(m["_text"])
+                # Support itératif : reprendre après le dernier match
+                start = m.get("_pos", 0)
+                match = m["_compiled"].search(m["_text"], start)
                 m["_match"] = match
+                if match:
+                    m["_pos"] = match.end()
                 return match is not None
             if method == "group":
                 match = m.get("_match")
@@ -1458,6 +1618,88 @@ class ApexInterpreter:
                 match = m["_compiled"].fullmatch(m["_text"])
                 m["_match"] = match
                 return match is not None
+            if method == "replaceAll":
+                return m["_compiled"].sub(args[0], m["_text"]) if args else m["_text"]
+            if method == "replaceFirst":
+                return m["_compiled"].sub(args[0], m["_text"], count=1) if args else m["_text"]
+            if method == "reset":
+                m["_pos"] = 0
+                m["_match"] = None
+                if args:
+                    m["_text"] = str(args[0])
+                return m
+            if method == "start":
+                match = m.get("_match")
+                return match.start(int(args[0]) if args else 0) if match else -1
+            if method == "end":
+                match = m.get("_match")
+                return match.end(int(args[0]) if args else 0) if match else -1
+            if method == "groupCount":
+                match = m.get("_match")
+                return len(match.groups()) if match else 0
+            if method == "hitEnd":
+                return m.get("_pos", 0) >= len(m["_text"])
+            if method == "lookingAt":
+                match = m["_compiled"].match(m["_text"])
+                m["_match"] = match
+                return match is not None
+            if method == "pattern":
+                return m.get("_pattern", "")
+
+        # Blob object
+        if m.get("_type") == "Blob":
+            data = m.get("_data", b"")
+            if method == "toString":
+                return data.decode('utf-8') if isinstance(data, bytes) else str(data)
+            if method == "size":
+                return len(data) if isinstance(data, bytes) else len(str(data).encode('utf-8'))
+
+        # SObjectType object (Schema describe)
+        if m.get("_type") == "SObjectType":
+            sobj_name = m.get("name", "")
+            if method == "getDescribe":
+                return {
+                    "_type": "DescribeSObjectResult",
+                    "name": sobj_name,
+                    "label": sobj_name,
+                    "labelPlural": sobj_name + "s",
+                    "keyPrefix": sobj_name[:3].lower(),
+                    "isCustom": sobj_name.endswith("__c"),
+                    "isAccessible": True,
+                    "isCreateable": True,
+                    "isUpdateable": True,
+                    "isDeletable": True,
+                    "isQueryable": True,
+                    "isSearchable": True,
+                }
+            if method == "newSObject":
+                return {"_sobject_type": sobj_name}
+
+        # DescribeSObjectResult
+        if m.get("_type") == "DescribeSObjectResult":
+            if method == "fields":
+                return {"_type": "FieldMap", "_sobject": m.get("name", "")}
+            if method == "getRecordTypeInfosByDeveloperName":
+                return {}
+            if method == "getRecordTypeInfosByName":
+                return {}
+            # Getter pour propriétés
+            if method in m:
+                return m[method]
+            if method.startswith("get"):
+                key = method[3:]
+                key = key[0].lower() + key[1:] if key else ""
+                return m.get(key)
+            if method.startswith("is"):
+                key = method
+                return m.get(key, False)
+
+        # TimeZone object
+        if m.get("_type") == "TimeZone":
+            if method == "getID":
+                return m.get("id", "GMT")
+            if method == "toString":
+                return m.get("id", "GMT")
 
         # SystemLabel — System.Label.XXX returns ''
         if m.get("_type") == "SystemLabel":
