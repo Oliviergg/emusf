@@ -11,6 +11,7 @@ from .flow_nodes import (
     FlowRecordUpdate, FlowRecordLookup, FlowRecordCreate, FlowRecordDelete,
     FlowLoop, FlowFormula, FlowVariable,
 )
+from .formula_engine import FormulaEngine, resolve_merge_fields
 
 
 class FlowInterpreter:
@@ -407,36 +408,18 @@ class FlowInterpreter:
         return None
 
     def _eval_formula(self, formula: FlowFormula):
-        """Évalue une formule Flow (support basique)."""
+        """Évalue une formule Flow via le moteur de formules unifié."""
         expr = formula.expression.strip()
 
-        # NOW()
-        if expr.upper() == "NOW()":
-            return datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        # TODAY()
-        if expr.upper() == "TODAY()":
-            return date.today().strftime("%Y-%m-%d")
-        # TRUE / FALSE
-        if expr.upper() == "TRUE":
-            return True
-        if expr.upper() == "FALSE":
-            return False
+        # Résoudre les merge fields {!ref} avant d'évaluer
+        resolved = resolve_merge_fields(expr, self._resolve_reference)
 
-        # Références {!varName} ou {!$Record.Field}
-        import re
-        resolved = expr
-        for match in re.finditer(r'\{!([^}]+)\}', expr):
-            ref = match.group(1)
-            val = self._resolve_reference(ref)
-            resolved = resolved.replace(match.group(0), str(val) if val is not None else "")
-
-        # Si c'est une simple valeur numérique
+        engine = FormulaEngine(self._resolve_reference)
         try:
-            return float(resolved) if "." in resolved else int(resolved)
-        except (ValueError, TypeError):
-            pass
-
-        return resolved
+            return engine.evaluate(resolved)
+        except Exception:
+            # Fallback : retourner la chaîne résolue
+            return resolved
 
     def _eval_formulas(self):
         """Évalue toutes les formules et les stocke dans les variables."""
