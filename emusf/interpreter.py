@@ -36,6 +36,23 @@ class ContinueException(Exception):
     pass
 
 
+def _common_prefix_len(a, b):
+    i = 0
+    while i < len(a) and i < len(b) and a[i] == b[i]:
+        i += 1
+    return i if i < max(len(a), len(b)) else -1
+
+
+def _common_prefix(a, b):
+    n = _common_prefix_len(a, b)
+    return a[:n] if n >= 0 else a
+
+
+def _unescape_html(s):
+    import html
+    return html.unescape(s)
+
+
 class ApexInterpreter:
     """
     Interprète un AST Apex.
@@ -916,6 +933,12 @@ class ApexInterpreter:
                 return v is not None and isinstance(v, str) and v.strip() != ""
             elif method == "valueOf":
                 return str(args[0]) if args else ""
+            elif method == "isEmpty":
+                v = args[0] if args else None
+                return v is None or (isinstance(v, str) and v == "")
+            elif method == "isNotEmpty":
+                v = args[0] if args else None
+                return v is not None and isinstance(v, str) and v != ""
             elif method == "join":
                 if len(args) >= 2:
                     lst = args[0]
@@ -923,6 +946,17 @@ class ApexInterpreter:
                     if isinstance(lst, list):
                         return sep.join(str(x) for x in lst)
                 return ""
+            elif method == "format":
+                if len(args) >= 2:
+                    template = args[0] if args else ''
+                    params = args[1] if len(args) > 1 else []
+                    if isinstance(params, list):
+                        for i, p in enumerate(params):
+                            template = template.replace('{' + str(i) + '}', str(p) if p is not None else 'null')
+                    return template
+                return args[0] if args else ''
+            elif method == "fromCharArray":
+                return ''.join(chr(int(c)) for c in args[0]) if args and isinstance(args[0], list) else ''
 
         # Integer static methods
         if call.obj == "Integer":
@@ -1100,11 +1134,6 @@ class ApexInterpreter:
                 soql = args[0] if args else ""
                 return self.org.execute_soql("[{}]".format(soql), context=self.variables)
 
-        # Blob static methods
-        if call.obj in ("Blob", "blob"):
-            if method == "valueOf":
-                return args[0] if args else ""
-
         # EncodingUtil static methods
         if call.obj == "EncodingUtil":
             if method == "base64Encode":
@@ -1244,6 +1273,151 @@ class ApexInterpreter:
         if call.obj == "System" and method == "schedule":
             return "FakeJobId_001"
 
+        # UserInfo static methods
+        if call.obj == "UserInfo":
+            _userinfo = {
+                "getUserId": "005000000000001AAA",
+                "getProfileId": "00e000000000001AAA",
+                "getUserRoleId": "00E000000000001AAA",
+                "getName": "Test User",
+                "getFirstName": "Test",
+                "getLastName": "User",
+                "getUserName": "testuser@example.com",
+                "getUserEmail": "testuser@example.com",
+                "getOrganizationId": "00D000000000001AAA",
+                "getOrganizationName": "Test Org",
+                "getDefaultCurrency": "EUR",
+                "getLocale": "fr_FR",
+                "getLanguage": "fr",
+                "getTimeZone": {"_type": "TimeZone", "id": "Europe/Paris"},
+                "getSessionId": "fakesession000000000000000001",
+                "isMultiCurrencyOrganization": False,
+                "getUiTheme": "Theme4d",
+                "getUiThemeDisplayed": "Theme4d",
+            }
+            if method in _userinfo:
+                return _userinfo[method]
+            return None
+
+        # Limits static methods
+        if call.obj == "Limits":
+            # Compteurs internes
+            if not hasattr(self, '_limits'):
+                self._limits = {"queries": 0, "dml": 0, "soql_rows": 0, "dml_rows": 0,
+                                "cpu_time": 0, "heap_size": 0, "callouts": 0, "future_calls": 0,
+                                "queueable_jobs": 0, "email_invocations": 0}
+            _limit_getters = {
+                "getQueries": lambda: self._limits["queries"],
+                "getDmlStatements": lambda: self._limits["dml"],
+                "getSoqlQueryRows": lambda: self._limits.get("soql_rows", 0),
+                "getDmlRows": lambda: self._limits["dml_rows"],
+                "getCpuTime": lambda: self._limits["cpu_time"],
+                "getHeapSize": lambda: self._limits["heap_size"],
+                "getCallouts": lambda: self._limits["callouts"],
+                "getFutureCalls": lambda: self._limits["future_calls"],
+                "getQueueableJobs": lambda: self._limits["queueable_jobs"],
+                "getEmailInvocations": lambda: self._limits["email_invocations"],
+                # Limites max (governor limits)
+                "getLimitQueries": lambda: 100,
+                "getLimitDmlStatements": lambda: 150,
+                "getLimitSoqlQueryRows": lambda: 50000,
+                "getLimitDmlRows": lambda: 10000,
+                "getLimitCpuTime": lambda: 10000,
+                "getLimitHeapSize": lambda: 6000000,
+                "getLimitCallouts": lambda: 100,
+                "getLimitFutureCalls": lambda: 50,
+                "getLimitQueueableJobs": lambda: 50,
+                "getLimitEmailInvocations": lambda: 10,
+            }
+            if method in _limit_getters:
+                return _limit_getters[method]()
+            return 0
+
+        # Schema static methods
+        if call.obj == "Schema":
+            if method == "getGlobalDescribe":
+                # Retourne un Map<String, SObjectType> basé sur les tables connues de l'org
+                try:
+                    tables = self.org.get_sobject_names() if hasattr(self.org, 'get_sobject_names') else []
+                except Exception:
+                    tables = []
+                return {t: {"_type": "SObjectType", "name": t} for t in tables}
+            if method == "describeSObjects":
+                return [{"_type": "DescribeSObjectResult", "name": a} for a in (args[0] if args and isinstance(args[0], list) else [])]
+
+        # Schema.SObjectType.XXX — e.g. Schema.SObjectType.Account
+        if call.obj == "SObjectType":
+            sobject_name = method
+            return {"_type": "SObjectType", "name": sobject_name}
+
+        # Blob static methods (compléter)
+        if call.obj in ("Blob", "blob"):
+            if method == "valueOf":
+                val = str(args[0]) if args else ""
+                return {"_type": "Blob", "_data": val.encode('utf-8')}
+            if method == "toPdf":
+                val = str(args[0]) if args else ""
+                return {"_type": "Blob", "_data": val.encode('utf-8')}
+
+        # Id static methods
+        if call.obj == "Id" and method == "valueOf":
+            return str(args[0]) if args else None
+
+        # Decimal static methods
+        if call.obj == "Decimal":
+            if method == "valueOf":
+                try:
+                    return float(args[0]) if args else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
+        # Double static methods
+        if call.obj == "Double":
+            if method == "valueOf":
+                try:
+                    return float(args[0]) if args else 0.0
+                except (ValueError, TypeError):
+                    return 0.0
+
+        # Assert class (API 59+)
+        if call.obj == "Assert":
+            if method in ("isTrue", "istrue"):
+                if not args or not args[0]:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected true"
+                    raise ApexException(msg)
+                return None
+            if method in ("isFalse", "isfalse"):
+                if args and args[0]:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected false"
+                    raise ApexException(msg)
+                return None
+            if method in ("areEqual", "areequal"):
+                if len(args) >= 2 and args[0] != args[1]:
+                    msg = args[2] if len(args) > 2 else "Assertion failed: {} != {}".format(args[0], args[1])
+                    raise ApexException(msg)
+                return None
+            if method in ("areNotEqual", "arenotequal"):
+                if len(args) >= 2 and args[0] == args[1]:
+                    msg = args[2] if len(args) > 2 else "Assertion failed: values are equal: {}".format(args[0])
+                    raise ApexException(msg)
+                return None
+            if method in ("isNotNull", "isnotnull"):
+                if not args or args[0] is None:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected non-null"
+                    raise ApexException(msg)
+                return None
+            if method in ("isNull", "isnull"):
+                if args and args[0] is not None:
+                    msg = args[1] if len(args) > 1 else "Assertion failed: expected null"
+                    raise ApexException(msg)
+                return None
+            if method in ("isInstanceOfType", "isinstanceoftype"):
+                # Simplifié — no-op dans l'émulateur
+                return None
+            if method == "fail":
+                msg = args[0] if args else "Assertion failed"
+                raise ApexException(msg)
+
         # Custom Settings: SomeObject__c.getInstance('name')
         if call.obj.endswith("__c") and method == "getInstance":
             sobject = call.obj
@@ -1288,16 +1462,58 @@ class ApexInterpreter:
         if isinstance(obj, dict):
             return self._call_map_method(obj, method, args)
         if isinstance(obj, (int, float)):
-            # Numeric methods
-            if method == "intValue":
-                return int(obj)
-            if method == "format":
-                return str(obj)
+            _num_methods = {
+                "intValue": lambda: int(obj),
+                "longValue": lambda: int(obj),
+                "doubleValue": lambda: float(obj),
+                "format": lambda: str(obj),
+                "abs": lambda: abs(obj),
+                "setScale": lambda: round(float(obj), int(args[0])) if args else float(obj),
+                "scale": lambda: len(str(float(obj)).split('.')[-1]) if '.' in str(float(obj)) else 0,
+                "precision": lambda: len(str(abs(obj)).replace('.', '').lstrip('0')) or 1,
+                "round": lambda: round(obj),
+                "stripTrailingZeros": lambda: float(str(float(obj)).rstrip('0').rstrip('.')),
+                "toPlainString": lambda: str(obj),
+                "valueOf": lambda: obj,
+                "compareTo": lambda: (0 if obj == args[0] else (-1 if obj < args[0] else 1)) if args else 0,
+                "min": lambda: min(obj, args[0]) if args else obj,
+                "max": lambda: max(obj, args[0]) if args else obj,
+                "pow": lambda: obj ** int(args[0]) if args else obj,
+                "divide": lambda: float(obj) / float(args[0]) if args and len(args) >= 2 else float(obj) / float(args[0]) if args else float(obj),
+            }
+            if method in _num_methods:
+                return _num_methods[method]()
             return obj
         raise Exception("Impossible d'appeler .{}() sur {}".format(method, type(obj).__name__))
 
     def _call_string_method(self, s, method, args):
+        import re as _re
+
+        def _split():
+            if args and args[0] == '':
+                return list(s)
+            if len(args) >= 2:
+                return _re.split(args[0], s, maxsplit=int(args[1]) - 1) if int(args[1]) > 0 else _re.split(args[0], s)
+            return _re.split(args[0], s) if args else [s]
+
+        def _substring_between():
+            if len(args) >= 2:
+                start = s.find(args[0])
+                if start == -1:
+                    return None
+                start += len(args[0])
+                end = s.find(args[1], start)
+                return s[start:end] if end != -1 else None
+            tag = args[0] if args else ''
+            start = s.find(tag)
+            if start == -1:
+                return None
+            start += len(tag)
+            end = s.find(tag, start)
+            return s[start:end] if end != -1 else None
+
         methods = {
+            # --- Existants ---
             "length": lambda: len(s),
             "contains": lambda: args[0] in s if args else False,
             "startsWith": lambda: s.startswith(args[0]) if args else False,
@@ -1306,15 +1522,15 @@ class ApexInterpreter:
             "toUpperCase": lambda: s.upper(),
             "trim": lambda: s.strip(),
             "substring": lambda: s[int(args[0]):int(args[1])] if len(args) >= 2 else s[int(args[0]):],
-            "indexOf": lambda: s.find(args[0]) if args else -1,
+            "indexOf": lambda: s.find(args[0], int(args[1])) if len(args) >= 2 else (s.find(args[0]) if args else -1),
             "replace": lambda: s.replace(args[0], args[1]) if len(args) >= 2 else s,
-            "split": lambda: list(s) if args and args[0] == '' else (__import__('re').split(args[0], s) if args else [s]),
+            "split": _split,
             "left": lambda: s[:int(args[0])] if args else s,
             "right": lambda: s[-int(args[0]):] if args else s,
             "removeStart": lambda: s[len(args[0]):] if args and s.startswith(args[0]) else s,
             "removeEnd": lambda: s[:-len(args[0])] if args and s.endswith(args[0]) else s,
             "leftPad": lambda: s.rjust(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
-            "replaceAll": lambda: __import__('re').sub(args[0], args[1], s) if len(args) >= 2 else s,
+            "replaceAll": lambda: _re.sub(args[0], args[1], s) if len(args) >= 2 else s,
             "equals": lambda: s == args[0] if args else False,
             "equalsIgnoreCase": lambda: s.lower() == args[0].lower() if args and isinstance(args[0], str) else False,
             "charAt": lambda: s[int(args[0])] if args else '',
@@ -1325,6 +1541,65 @@ class ApexInterpreter:
             "normalizeSpace": lambda: " ".join(s.split()),
             "countMatches": lambda: s.count(args[0]) if args else 0,
             "size": lambda: len(s),
+            # --- Nouveaux : recherche & comparaison ---
+            "containsIgnoreCase": lambda: args[0].lower() in s.lower() if args and isinstance(args[0], str) else False,
+            "startsWithIgnoreCase": lambda: s.lower().startswith(args[0].lower()) if args and isinstance(args[0], str) else False,
+            "endsWithIgnoreCase": lambda: s.lower().endswith(args[0].lower()) if args and isinstance(args[0], str) else False,
+            "indexOfIgnoreCase": lambda: s.lower().find(args[0].lower(), int(args[1])) if len(args) >= 2 else (s.lower().find(args[0].lower()) if args else -1),
+            "lastIndexOf": lambda: s.rfind(args[0], 0, int(args[1]) + 1) if len(args) >= 2 else (s.rfind(args[0]) if args else -1),
+            "lastIndexOfIgnoreCase": lambda: s.lower().rfind(args[0].lower(), 0, int(args[1]) + 1) if len(args) >= 2 else (s.lower().rfind(args[0].lower()) if args else -1),
+            "compareTo": lambda: (0 if s == args[0] else (-1 if s < args[0] else 1)) if args else 0,
+            # --- Nouveaux : manipulation ---
+            "mid": lambda: s[int(args[0]):int(args[0]) + int(args[1])] if len(args) >= 2 else s,
+            "reverse": lambda: s[::-1],
+            "rightPad": lambda: s.ljust(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
+            "center": lambda: s.center(int(args[0]), args[1] if len(args) > 1 else ' ') if args else s,
+            "remove": lambda: s.replace(args[0], '') if args else s,
+            "removeStartIgnoreCase": lambda: s[len(args[0]):] if args and s.lower().startswith(args[0].lower()) else s,
+            "removeEndIgnoreCase": lambda: s[:-len(args[0])] if args and s.lower().endswith(args[0].lower()) else s,
+            "replaceFirst": lambda: _re.sub(args[0], args[1], s, count=1) if len(args) >= 2 else s,
+            "uncapitalize": lambda: s[0].lower() + s[1:] if s else s,
+            "swapCase": lambda: s.swapcase(),
+            "deleteWhitespace": lambda: ''.join(c for c in s if not c.isspace()),
+            "stripHtmlTags": lambda: _re.sub(r'<[^>]+>', '', s),
+            # --- Nouveaux : substring helpers ---
+            "substringAfter": lambda: s[s.find(args[0]) + len(args[0]):] if args and s.find(args[0]) != -1 else '',
+            "substringAfterLast": lambda: s[s.rfind(args[0]) + len(args[0]):] if args and s.rfind(args[0]) != -1 else '',
+            "substringBefore": lambda: s[:s.find(args[0])] if args and s.find(args[0]) != -1 else s,
+            "substringBeforeLast": lambda: s[:s.rfind(args[0])] if args and s.rfind(args[0]) != -1 else s,
+            "substringBetween": _substring_between,
+            # --- Nouveaux : tests de contenu ---
+            "isAllLowerCase": lambda: s.islower() if s else False,
+            "isAllUpperCase": lambda: s.isupper() if s else False,
+            "isAlpha": lambda: s.isalpha() if s else False,
+            "isAlphanumeric": lambda: s.isalnum() if s else False,
+            "isAlphaSpace": lambda: all(c.isalpha() or c == ' ' for c in s) if s else False,
+            "isAlphanumericSpace": lambda: all(c.isalnum() or c == ' ' for c in s) if s else False,
+            "isNumeric": lambda: s.isdigit() if s else False,
+            "isNumericSpace": lambda: all(c.isdigit() or c == ' ' for c in s) if s else False,
+            "isWhitespace": lambda: s.isspace() if s else True,
+            "containsWhitespace": lambda: any(c.isspace() for c in s),
+            "containsAny": lambda: any(c in s for c in args[0]) if args else False,
+            "containsNone": lambda: not any(c in s for c in args[0]) if args else True,
+            "containsOnly": lambda: all(c in args[0] for c in s) if args else False,
+            "isAsciiPrintable": lambda: all(32 <= ord(c) <= 126 for c in s) if s else True,
+            # --- Nouveaux : char & code ---
+            "getChars": lambda: [ord(c) for c in s],
+            "hashCode": lambda: hash(s),
+            "indexOfChar": lambda: s.find(chr(int(args[0])), int(args[1])) if len(args) >= 2 else (s.find(chr(int(args[0]))) if args else -1),
+            # --- Nouveaux : distance ---
+            "difference": lambda: args[0][len(_common_prefix(s, args[0])):] if args else '',
+            "indexOfDifference": lambda: _common_prefix_len(s, args[0]) if args else -1,
+            # --- Escape / unescape ---
+            "escapeHtml4": lambda: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'),
+            "escapeHtml3": lambda: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'),
+            "escapeXml": lambda: s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;'),
+            "escapeJava": lambda: s.encode('unicode_escape').decode('ascii'),
+            "escapeEcmaScript": lambda: s.encode('unicode_escape').decode('ascii').replace("'", "\\'"),
+            "unescapeHtml4": lambda: _unescape_html(s),
+            "unescapeHtml3": lambda: _unescape_html(s),
+            "unescapeXml": lambda: s.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&apos;', "'"),
+            "unescapeJava": lambda: s.encode().decode('unicode_escape'),
         }
         if method in methods:
             return methods[method]()
@@ -1379,8 +1654,12 @@ class ApexInterpreter:
         if m.get("_type") == "Matcher":
             import re as _re
             if method == "find":
-                match = m["_compiled"].search(m["_text"])
+                # Support itératif : reprendre après le dernier match
+                start = m.get("_pos", 0)
+                match = m["_compiled"].search(m["_text"], start)
                 m["_match"] = match
+                if match:
+                    m["_pos"] = match.end()
                 return match is not None
             if method == "group":
                 match = m.get("_match")
@@ -1395,6 +1674,88 @@ class ApexInterpreter:
                 match = m["_compiled"].fullmatch(m["_text"])
                 m["_match"] = match
                 return match is not None
+            if method == "replaceAll":
+                return m["_compiled"].sub(args[0], m["_text"]) if args else m["_text"]
+            if method == "replaceFirst":
+                return m["_compiled"].sub(args[0], m["_text"], count=1) if args else m["_text"]
+            if method == "reset":
+                m["_pos"] = 0
+                m["_match"] = None
+                if args:
+                    m["_text"] = str(args[0])
+                return m
+            if method == "start":
+                match = m.get("_match")
+                return match.start(int(args[0]) if args else 0) if match else -1
+            if method == "end":
+                match = m.get("_match")
+                return match.end(int(args[0]) if args else 0) if match else -1
+            if method == "groupCount":
+                match = m.get("_match")
+                return len(match.groups()) if match else 0
+            if method == "hitEnd":
+                return m.get("_pos", 0) >= len(m["_text"])
+            if method == "lookingAt":
+                match = m["_compiled"].match(m["_text"])
+                m["_match"] = match
+                return match is not None
+            if method == "pattern":
+                return m.get("_pattern", "")
+
+        # Blob object
+        if m.get("_type") == "Blob":
+            data = m.get("_data", b"")
+            if method == "toString":
+                return data.decode('utf-8') if isinstance(data, bytes) else str(data)
+            if method == "size":
+                return len(data) if isinstance(data, bytes) else len(str(data).encode('utf-8'))
+
+        # SObjectType object (Schema describe)
+        if m.get("_type") == "SObjectType":
+            sobj_name = m.get("name", "")
+            if method == "getDescribe":
+                return {
+                    "_type": "DescribeSObjectResult",
+                    "name": sobj_name,
+                    "label": sobj_name,
+                    "labelPlural": sobj_name + "s",
+                    "keyPrefix": sobj_name[:3].lower(),
+                    "isCustom": sobj_name.endswith("__c"),
+                    "isAccessible": True,
+                    "isCreateable": True,
+                    "isUpdateable": True,
+                    "isDeletable": True,
+                    "isQueryable": True,
+                    "isSearchable": True,
+                }
+            if method == "newSObject":
+                return {"_sobject_type": sobj_name}
+
+        # DescribeSObjectResult
+        if m.get("_type") == "DescribeSObjectResult":
+            if method == "fields":
+                return {"_type": "FieldMap", "_sobject": m.get("name", "")}
+            if method == "getRecordTypeInfosByDeveloperName":
+                return {}
+            if method == "getRecordTypeInfosByName":
+                return {}
+            # Getter pour propriétés
+            if method in m:
+                return m[method]
+            if method.startswith("get"):
+                key = method[3:]
+                key = key[0].lower() + key[1:] if key else ""
+                return m.get(key)
+            if method.startswith("is"):
+                key = method
+                return m.get(key, False)
+
+        # TimeZone object
+        if m.get("_type") == "TimeZone":
+            if method == "getID":
+                return m.get("id", "GMT")
+            if method == "toString":
+                return m.get("id", "GMT")
 
         # FormulaBuilder instance methods (fluent)
         if m.get("_type") == "FormulaBuilder":
