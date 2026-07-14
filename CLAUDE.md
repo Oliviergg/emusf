@@ -15,20 +15,16 @@ python3 -m pytest tests/ -v
 # Run a single test
 python3 -m pytest tests/test_emulator.py::test_simple_soql -v
 
-# Execute an Apex class
-python3 run.py apex/AccountDemo.cls run
+# Unified entry point: REPL, Apex class, or scenario — see python3 run.py --help
+python3 run.py                                  # interactive Apex/SOQL REPL (sandbox org)
+python3 run.py --org data                       # REPL on exported Salesforce data (read-only)
+python3 run.py apex/AccountDemo.cls [method]    # execute a static method (sandbox: DML + triggers)
+python3 run.py apex/AccountPgDemo.cls --org data  # execute against exported data
+python3 run.py scenarios/account_trigger        # run a scenario (classes + triggers + flows)
+# Options: --ast (print AST), --no-seed / --no-triggers (sandbox), --entry (scenario entry file)
 
 # Run Apex test suite (apex_tests/ directory, includes the Test*Pg.cls DML tests)
 python3 apex_tests/run_tests.py
-
-# Execute an Apex class against exported Salesforce data (schema `data`, read-only)
-python3 run_pg.py apex/AccountPgDemo.cls run
-
-# Interactive Apex/SOQL REPL against exported data
-python3 utils/repl.py
-
-# Run a scenario (loads classes + triggers from a directory)
-python3 run_scenario.py scenarios/account_trigger
 
 # Run tests against real SFDX project metadata
 python3 apex_tests/run_sf_tests.py

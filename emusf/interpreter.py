@@ -1437,7 +1437,9 @@ class ApexInterpreter:
                     result.update(row)
                     return result
             except Exception:
-                pass
+                # Rollback obligatoire : sans lui la transaction resterait
+                # 'aborted' et toutes les requêtes suivantes échoueraient
+                self.org.conn.rollback()
             return {"_sobject_type": sobject}
 
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))

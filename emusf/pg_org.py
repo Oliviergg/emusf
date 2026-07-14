@@ -71,7 +71,14 @@ class PgOrg:
 
     def _execute(self, cq: CompiledQuery) -> list:
         cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(cq.sql, cq.params)
+        try:
+            cur.execute(cq.sql, cq.params)
+        except Exception:
+            # Sans rollback, la transaction resterait 'aborted' et toutes les
+            # requêtes suivantes échoueraient ('current transaction is aborted')
+            self.conn.rollback()
+            cur.close()
+            raise
         raw_rows = cur.fetchall()
         cur.close()
 

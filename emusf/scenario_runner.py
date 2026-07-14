@@ -1,14 +1,9 @@
-"""Execute un scénario Apex cohérent depuis un répertoire.
+"""Exécution d'un scénario Apex cohérent depuis un répertoire.
 
 Charge toutes les classes (.cls), triggers (.trigger) et flows (.flow-meta.xml)
 du répertoire, puis exécute le point d'entrée (Main.cls par défaut).
 
-Usage:
-    python run_scenario.py <répertoire> [fichier_principal] [méthode]
-
-Exemples:
-    python run_scenario.py scenarios/account_trigger
-    python run_scenario.py scenarios/account_trigger Main.cls run
+Point d'entrée CLI : `python run.py scenarios/<répertoire>`.
 """
 
 import sys
@@ -231,14 +226,3 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
     org.conn.close()
 
     return failed == 0
-
-
-if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-
-    scenario_dir = args[0] if len(args) > 0 else "scenarios/account_trigger"
-    entry_file = args[1] if len(args) > 1 else "Main.cls"
-    method = args[2] if len(args) > 2 else "run"
-
-    ok = load_scenario(scenario_dir, entry_file, method)
-    sys.exit(0 if ok else 1)
