@@ -66,6 +66,11 @@ def execute_callout(req: dict, credentials: dict) -> dict:
     # Résoudre Named Credential
     endpoint, cred_headers = resolve_endpoint(endpoint, credentials)
 
+    # Ignorer les headers de requête à merge field non résolu (ex:
+    # 'Bearer {!$Credential.X.apiKey}') pour laisser le Named Credential
+    # fournir la vraie valeur (auth injectée côté plateforme en réel)
+    req_headers = {k: v for k, v in req_headers.items()
+                   if not (isinstance(v, str) and "{!" in v)}
     # Merger headers: credential headers en base, request headers en override
     headers = {**cred_headers, **req_headers}
 

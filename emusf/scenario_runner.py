@@ -119,15 +119,27 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
         with open(seed_path) as f:
             tables = [line.strip() for line in f if line.strip()]
         cur = org.conn.cursor()
+        # Option: nombre de lignes à copier pour les grosses tables
+        # (fichier .seed_limit avec 'table=N'), défaut illimité
+        limits = {}
+        limit_path = os.path.join(scenario_dir, ".seed_limit")
+        if os.path.exists(limit_path):
+            with open(limit_path) as f:
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        limits[k.strip().lower()] = int(v)
         for table in tables:
             t = table.lower()
             try:
-                # Créer la table dans test si absente (même structure que data)
+                # Recréer la table à l'identique de data (DROP pour éviter les
+                # décalages de colonnes avec une table test préexistante)
+                cur.execute("DROP TABLE IF EXISTS test.{t} CASCADE".format(t=t))
                 cur.execute(
-                    "CREATE TABLE IF NOT EXISTS test.{t} "
-                    "(LIKE data.{t} INCLUDING DEFAULTS)".format(t=t))
-                cur.execute("TRUNCATE test.{t}".format(t=t))
-                cur.execute("INSERT INTO test.{t} SELECT * FROM data.{t}".format(t=t))
+                    "CREATE TABLE test.{t} (LIKE data.{t} INCLUDING DEFAULTS)".format(t=t))
+                lim = " LIMIT {}".format(limits[t]) if t in limits else ""
+                cur.execute(
+                    "INSERT INTO test.{t} SELECT * FROM data.{t}{lim}".format(t=t, lim=lim))
                 org.conn.commit()
                 # Déclarer la table à l'org (créée après son introspection)
                 cur.execute(
@@ -156,11 +168,19 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
                 RED, os.path.basename(path), e, RESET
             ))
 
-    # --- 3c. Charger les Named Credentials (credentials.yaml) ---
+    # --- 3c. Charger les Named Credentials ---
+    # credentials.yaml (versionné, valeurs factices) puis credentials.local.yaml
+    # (gitignoré, secrets réels) qui l'emporte. Fallback sur le fichier partagé
+    # scenarios/.credentials.local.yaml.
     named_credentials = {}
-    cred_path = os.path.join(scenario_dir, "credentials.yaml")
-    if os.path.exists(cred_path):
-        named_credentials = load_named_credentials(cred_path)
+    for cred_path in (
+        os.path.join(os.path.dirname(scenario_dir.rstrip("/")), ".credentials.local.yaml"),
+        os.path.join(scenario_dir, "credentials.yaml"),
+        os.path.join(scenario_dir, "credentials.local.yaml"),
+    ):
+        if os.path.exists(cred_path):
+            named_credentials.update(load_named_credentials(cred_path))
+    if named_credentials:
         print("  {}CRED{} {} named credentials chargées".format(
             DIM, RESET, len(named_credentials)))
 

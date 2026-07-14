@@ -53,6 +53,34 @@ def _unescape_html(s):
     return html.unescape(s)
 
 
+from decimal import Decimal as _Decimal
+
+_NUM_RE = __import__("re").compile(r"-?\d+(\.\d+)?$")
+
+
+def _json_clean(value):
+    """Prépare une valeur Apex pour JSON.serialize :
+    - retire les clés internes de l'émulateur (_type, _class, _chain, _sobject_type)
+    - convertit les nombres stockés en TEXT ('0.7', '2025') en vrais nombres
+      (les tables auto-créées stockent tout en TEXT, mais les API attendent des
+      nombres pour temperature, max_tokens, etc.)
+    """
+    internal = {"_type", "_class", "_chain", "_sobject_type", "_context_type"}
+    if isinstance(value, dict):
+        return {k: _json_clean(v) for k, v in value.items()
+                if not (isinstance(k, str) and k.startswith("_")) and k not in internal}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_clean(v) for v in value]
+    if isinstance(value, str) and _NUM_RE.match(value):
+        # Ne pas convertir les Id/refs (préfixes alphanumériques) : _NUM_RE
+        # n'accepte que des nombres purs
+        return float(value) if "." in value else int(value)
+    if isinstance(value, _Decimal):
+        # Decimal (colonnes numériques PG) → nombre JSON, pas une chaîne
+        return int(value) if value == value.to_integral_value() else float(value)
+    return value
+
+
 def _field_of(record, field):
     """Accès champ insensible à la casse sur un SObject (dict)."""
     if not isinstance(record, dict):
@@ -100,6 +128,7 @@ class ApexInterpreter:
         self.output = []
         self.classes = {}  # {class_name: ClassDef}
         self._current_class = None  # ClassDef en cours d'exécution
+        self._current_return_type = None  # type de retour de la méthode en cours
         self._current_instance = None  # Instance en cours (pour this)
         self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
         self._http_mock = None  # Instance HttpCalloutMock pour Test.setMock
@@ -271,6 +300,17 @@ class ApexInterpreter:
                     continue
 
         elif isinstance(stmt, Return):
+            # return [SELECT ...] : exécuter la requête, puis coercer selon le
+            # type de retour de la méthode (SObject unique -> 1re ligne,
+            # List<X> -> toutes les lignes)
+            if isinstance(stmt.value, StringLiteral) and \
+                    _is_soql_literal(stmt.value.value):
+                rows = self.org.execute_soql(stmt.value.value, context=self.variables)
+                rt = (self._current_return_type or "").strip()
+                is_collection = rt[:5].lower() in ("list<", "set<", "map<") or rt.endswith("[]")
+                if is_collection:
+                    raise ReturnException(rows)
+                raise ReturnException(rows[0] if rows else None)
             value = self._eval(stmt.value) if stmt.value else None
             raise ReturnException(value)
 
@@ -1036,9 +1076,9 @@ class ApexInterpreter:
                 return str(o)
 
             if method == "serialize":
-                return _json.dumps(args[0], default=_default) if args else "null"
+                return _json.dumps(_json_clean(args[0]), default=_default) if args else "null"
             elif method == "serializePretty":
-                return _json.dumps(args[0], indent=2, default=_default) if args else "null"
+                return _json.dumps(_json_clean(args[0]), indent=2, default=_default) if args else "null"
             elif method == "deserialize":
                 if len(args) >= 2 and isinstance(args[0], str):
                     return self._json_convert_dates(_json.loads(args[0]))
@@ -2371,9 +2411,11 @@ class ApexInterpreter:
         saved_instance = self._current_instance
         saved_class = self._current_class
         saved_vars = self.variables.copy()
+        saved_rt = self._current_return_type
 
         self._current_instance = instance
         self._current_class = class_def
+        self._current_return_type = getattr(method_def, "return_type", None)
 
         new_scope = {}
         for k, v in saved_vars.items():
@@ -2403,13 +2445,16 @@ class ApexInterpreter:
         self.variables = saved_vars
         self._current_instance = saved_instance
         self._current_class = saved_class
+        self._current_return_type = saved_rt
         return result
 
     def _invoke_method(self, class_def, method_def, args):
         """Invoque une méthode avec un scope isolé (stack de variables)."""
         saved_class = self._current_class
         saved_vars = self.variables.copy()
+        saved_rt = self._current_return_type
         self._current_class = class_def
+        self._current_return_type = getattr(method_def, "return_type", None)
 
         # Nouveau scope : on garde les constantes de classe et les classes
         new_scope = {}
@@ -2452,6 +2497,7 @@ class ApexInterpreter:
         # Restaurer le scope précédent
         self.variables = saved_vars
         self._current_class = saved_class
+        self._current_return_type = saved_rt
         return result
 
     def create_instance(self, class_name: str, constructor_args: list = None):
