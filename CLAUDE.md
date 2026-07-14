@@ -24,6 +24,9 @@ python3 run_tests.py
 # Execute an Apex class against exported Salesforce data (schema `data`, read-only)
 python3 run_pg.py apex/AccountPgDemo.cls run
 
+# Interactive Apex/SOQL REPL against exported data
+python3 utils/repl.py
+
 # Run a scenario (loads classes + triggers from a directory)
 python3 run_scenario.py scenarios/account_trigger
 
