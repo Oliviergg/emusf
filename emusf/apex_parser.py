@@ -31,7 +31,17 @@ class ApexParser:
     """Parse du code Apex en AST."""
 
     def parse_class(self, source: str, method_name: str = "run") -> Block:
-        """Parse une classe Apex et retourne le Block de la méthode demandée."""
+        """Parse une classe Apex et retourne le Block de la méthode demandée.
+
+        Frontend ANTLR par défaut ; EMUSF_FRONTEND=legacy pour le parser maison.
+        """
+        if os.environ.get("EMUSF_FRONTEND", "antlr") != "legacy":
+            from . import antlr
+            class_def = antlr.parse_full_class(source)
+            method = class_def.methods.get(method_name)
+            if method is None:
+                raise Exception("Méthode '{}' non trouvée".format(method_name))
+            return Block(statements=method.body)
         body = self._extract_method(source, method_name)
         if body is None:
             raise Exception("Méthode '{}' non trouvée".format(method_name))

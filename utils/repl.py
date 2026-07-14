@@ -10,7 +10,6 @@ import readline
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from emusf import ApexParser, ApexInterpreter
-from emusf.ast_nodes import Block
 from emusf.pg_org import PgOrg
 from emusf.sfdx_loader import configure_pg_org
 from emusf.ast_printer import print_ast
@@ -101,11 +100,10 @@ def execute_input(line: str):
             print(RED + "ERREUR SOQL: " + str(e) + RESET)
         return
 
-    # Apex — wrapper dans une classe, parsée par le frontend par défaut (ANTLR)
+    # Apex — wrapper dans une classe (parse_class passe par le frontend ANTLR)
     apex_source = "public class REPL {{ public static void run() {{ {} }} }}".format(line)
     try:
-        class_def = parser.parse_full_class(apex_source)
-        ast = Block(statements=class_def.methods["run"].body)
+        ast = parser.parse_class(apex_source, "run")
         if show_ast:
             print_ast(ast)
         interpreter._exec_block(ast)

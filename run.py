@@ -11,14 +11,15 @@ from emusf.trigger_parser import load_trigger
 # --- Setup org avec des données ---
 org = PgTestOrg(DSN, schema="test")
 org.truncate_all()
-org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"})
+org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0",
+                               "Famille_de_compte__c": "TEXT"})
 org.create_sobject("Contact", {"LastName": "TEXT", "AccountId": "TEXT"})
 
 org.register_relationship("Contacts", "Contact", "AccountId", "Account")
 
 org.insert("Account", [
-    {"Id": "001001", "Name": "Acme", "Active__c": 1},
-    {"Id": "001002", "Name": "Boring Corp", "Active__c": 0},
+    {"Id": "001001", "Name": "Acme", "Active__c": 1, "Famille_de_compte__c": "Client"},
+    {"Id": "001002", "Name": "Boring Corp", "Active__c": 0, "Famille_de_compte__c": "Prospect"},
 ])
 org.insert("Contact", [
     {"Id": "003001", "LastName": "Dupont", "AccountId": "001001"},
