@@ -1,13 +1,12 @@
-"""Exécute un fichier Apex contre une vraie base PostgreSQL."""
+"""Exécute un fichier Apex contre les données Salesforce exportées
+(schema `data`, lecture seule via PgOrg)."""
 
 import sys
 
 from emusf import ApexParser, ApexInterpreter
+from emusf.config import DSN
 from emusf.pg_org import PgOrg
 from emusf.ast_printer import print_ast
-
-# --- Connexion PG ---
-DSN = "host=localhost port=6000 user=postgres password=dcc948df3501919f709cb976fa2cb24000be8b12 dbname=biup"
 
 org = PgOrg(DSN, schema="data")
 

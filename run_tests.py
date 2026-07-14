@@ -39,8 +39,7 @@ if os.path.isdir(helpers_dir):
             ))
 
 # Runner custom qui pré-charge les helpers
-files = sorted(f for f in glob.glob(os.path.join(test_dir, "Test*.cls"))
-               if not f.endswith("Pg.cls"))  # Pg tests run via run_pg_tests.py
+files = sorted(glob.glob(os.path.join(test_dir, "Test*.cls")))
 if not files:
     print("Aucun test trouvé")
     sys.exit(0)

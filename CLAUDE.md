@@ -18,8 +18,11 @@ python3 -m pytest tests/test_emulator.py::test_simple_soql -v
 # Execute an Apex class
 python3 run.py apex/AccountDemo.cls run
 
-# Run Apex test suite (apex_tests/ directory)
+# Run Apex test suite (apex_tests/ directory, includes the Test*Pg.cls DML tests)
 python3 run_tests.py
+
+# Execute an Apex class against exported Salesforce data (schema `data`, read-only)
+python3 run_pg.py apex/AccountPgDemo.cls run
 
 # Run a scenario (loads classes + triggers from a directory)
 python3 run_scenario.py scenarios/account_trigger
