@@ -131,6 +131,7 @@ class _Builder:
     def __init__(self, parser_cls):
         self.AP = parser_cls
         self.warnings = []  # constructions ignorées (parité parser maison)
+        self._dml_counter = 0  # variables temporaires pour DML inline
 
     # ------------------------------------------------------------------ #
     # Classes
@@ -348,7 +349,14 @@ class _Builder:
         target = self.expr(expr_ctx)
         if isinstance(target, Variable):
             return [node_cls(var_name=target.name)]
-        raise _Unsupported("DML sur expression")
+        # DML sur une expression inline (insert new X(...), insert maListe())
+        # → variable temporaire puis DML dessus
+        self._dml_counter += 1
+        tmp = "__dml_tmp_{}".format(self._dml_counter)
+        return [
+            VarDecl(type_name="SObject", var_name=tmp, value=target),
+            node_cls(var_name=tmp),
+        ]
 
     def _if(self, ctx) -> IfElse:
         condition = self.expr(ctx.parExpression().expression())
