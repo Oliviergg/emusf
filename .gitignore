@@ -3,6 +3,6 @@ __pycache__/
 .pytest_cache/
 .sfdx/
 node_modules/
-static/slds/
+web/static/slds/
 .venv/
 .DS_Store
