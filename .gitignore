@@ -6,3 +6,4 @@ node_modules/
 web/static/slds/
 .venv/
 .DS_Store
+.env
