@@ -1,6 +1,6 @@
 TODO 
 -- migrer le parser Apex vers la grammaire ANTLR apex-parser (évaluée OK, voir docs/eval_grammaire_antlr.md) :
-   1. test pytest optionnel qui compare les 2 parsers sur le corpus (oracle)
+   1. [FAIT] test pytest optionnel qui compare les 2 parsers sur le corpus (tests/test_parser_oracle.py)
    2. visitor AntlrToAstVisitor qui mappe le parse tree ANTLR vers ast_nodes.py
    3. retirer lexer.py/apex_parser.py une fois la parité atteinte
 -- harnais de test différentiel contre une scratch org (exécuter le même Apex sur EMUSF et une vraie org, comparer résultats/exceptions/limits)

@@ -26,3 +26,16 @@ python3 eval_tricky.py    # batterie de constructions Apex avancées
 
 Le répertoire `gen/` (parser généré, ~2 Mo) n'est pas versionné — le régénérer
 avec les commandes ci-dessus.
+
+## Test-oracle
+
+Une fois `gen/` généré, `tests/test_parser_oracle.py` compare automatiquement le
+verdict (accepté/rejeté) du parser maison à celui du parser ANTLR sur tout le
+corpus `.cls`/`.trigger` du repo :
+
+```bash
+python3 -m pytest tests/test_parser_oracle.py -v
+```
+
+Sans `gen/`, le test est sauté (skip) — la suite de tests reste utilisable sans
+Java ni ANTLR.
