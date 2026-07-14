@@ -7,3 +7,6 @@ web/static/slds/
 .venv/
 .DS_Store
 .env
+credentials.yaml
+**/credentials.local.yaml
+scenarios/.credentials.local.yaml
