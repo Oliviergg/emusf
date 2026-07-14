@@ -53,6 +53,18 @@ def _unescape_html(s):
     return html.unescape(s)
 
 
+def _blob_bytes(val) -> bytes:
+    """Normalise un Blob Apex en bytes : accepte le wrapper
+    {'_type': 'Blob', '_data': ...}, des bytes bruts ou une chaîne."""
+    if isinstance(val, dict) and val.get("_type") == "Blob":
+        val = val.get("_data", b"")
+    if isinstance(val, (bytes, bytearray)):
+        return bytes(val)
+    if isinstance(val, str):
+        return val.encode("utf-8")
+    return b""
+
+
 class ApexInterpreter:
     """
     Interprète un AST Apex.
@@ -1138,12 +1150,7 @@ class ApexInterpreter:
         if call.obj == "EncodingUtil":
             if method == "base64Encode":
                 import base64
-                val = args[0] if args else ""
-                if isinstance(val, (bytes, bytearray)):
-                    return base64.b64encode(val).decode()
-                if isinstance(val, str):
-                    return base64.b64encode(val.encode()).decode()
-                return ""
+                return base64.b64encode(_blob_bytes(args[0])).decode() if args else ""
             if method == "urlEncode":
                 import urllib.parse
                 return urllib.parse.quote(str(args[0]), safe='') if args else ""
@@ -1151,35 +1158,27 @@ class ApexInterpreter:
                 import base64
                 return base64.b64decode(str(args[0])).decode() if args else ""
             if method == "convertToHex":
-                val = args[0] if args else ""
-                if isinstance(val, (bytes, bytearray)):
-                    return val.hex()
-                return val.encode().hex() if isinstance(val, str) else ""
+                return _blob_bytes(args[0]).hex() if args else ""
             if method == "convertFromHex":
                 val = str(args[0]) if args else ""
-                return bytes.fromhex(val)
+                return {"_type": "Blob", "_data": bytes.fromhex(val)}
 
         # Crypto static methods
         if call.obj == "Crypto":
             if method == "encrypt":
                 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
                 algo = str(args[0]) if args else ""
-                key = args[1] if len(args) > 1 else b""
-                iv = args[2] if len(args) > 2 else b""
-                data = args[3] if len(args) > 3 else b""
-                if isinstance(key, str):
-                    key = key.encode()
-                if isinstance(iv, str):
-                    iv = iv.encode()
-                if isinstance(data, str):
-                    data = data.encode()
+                key = _blob_bytes(args[1]) if len(args) > 1 else b""
+                iv = _blob_bytes(args[2]) if len(args) > 2 else b""
+                data = _blob_bytes(args[3]) if len(args) > 3 else b""
                 # PKCS7 padding
                 block_size = 16
                 pad_len = block_size - (len(data) % block_size)
                 data = data + bytes([pad_len]) * pad_len
                 cipher = Cipher(algorithms.AES(key), modes.CBC(iv))
                 encryptor = cipher.encryptor()
-                return encryptor.update(data) + encryptor.finalize()
+                return {"_type": "Blob",
+                        "_data": encryptor.update(data) + encryptor.finalize()}
             if method == "generateAesKey":
                 import os
                 bits = int(args[0]) if args else 128
@@ -1190,21 +1189,15 @@ class ApexInterpreter:
             if method == "generateMac":
                 import hmac, hashlib
                 algo = str(args[0]).lower().replace("-", "") if args else "hmacsha256"
-                data = args[1] if len(args) > 1 else b""
-                key = args[2] if len(args) > 2 else b""
-                if isinstance(data, str):
-                    data = data.encode()
-                if isinstance(key, str):
-                    key = key.encode()
+                data = _blob_bytes(args[1]) if len(args) > 1 else b""
+                key = _blob_bytes(args[2]) if len(args) > 2 else b""
                 hash_map = {"hmacsha256": hashlib.sha256, "hmacsha1": hashlib.sha1, "hmacmd5": hashlib.md5}
                 hash_fn = hash_map.get(algo, hashlib.sha256)
                 return hmac.new(key, data, hash_fn).digest()
             if method == "generateDigest":
                 import hashlib
                 algo = str(args[0]).lower().replace("-", "") if args else "sha256"
-                data = args[1] if len(args) > 1 else b""
-                if isinstance(data, str):
-                    data = data.encode()
+                data = _blob_bytes(args[1]) if len(args) > 1 else b""
                 hash_map = {"sha256": hashlib.sha256, "sha1": hashlib.sha1, "md5": hashlib.md5}
                 hash_fn = hash_map.get(algo, hashlib.sha256)
                 return hash_fn(data).digest()

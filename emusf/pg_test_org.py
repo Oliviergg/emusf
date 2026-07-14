@@ -155,6 +155,16 @@ class PgTestOrg(PgOrg):
             return
         self.create_sobject(sobject, {k: v for k, v in cols.items()})
 
+    def _execute(self, cq):
+        """Comme PgOrg._execute, mais une table absente renvoie 0 lignes :
+        les tables sont créées paresseusement à l'insert, alors que dans
+        Salesforce l'objet existe toujours (SELECT avant tout insert = vide)."""
+        import psycopg2.errors
+        try:
+            return super()._execute(cq)
+        except psycopg2.errors.UndefinedTable:
+            return []
+
     def _auto_extend_table(self, sobject: str, records: list):
         """Ajoute les colonnes manquantes (TEXT) quand un record porte des
         champs inconnus de la table — miroir de _auto_create_table pour les

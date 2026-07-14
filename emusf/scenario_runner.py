@@ -120,8 +120,21 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
             tables = [line.strip() for line in f if line.strip()]
         cur = org.conn.cursor()
         for table in tables:
+            t = table.lower()
             try:
-                cur.execute("INSERT INTO test.{t} SELECT * FROM data.{t}".format(t=table.lower()))
+                # Créer la table dans test si absente (même structure que data)
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS test.{t} "
+                    "(LIKE data.{t} INCLUDING DEFAULTS)".format(t=t))
+                cur.execute("TRUNCATE test.{t}".format(t=t))
+                cur.execute("INSERT INTO test.{t} SELECT * FROM data.{t}".format(t=t))
+                org.conn.commit()
+                # Déclarer la table à l'org (créée après son introspection)
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'test' AND table_name = %s "
+                    "ORDER BY ordinal_position", [t])
+                org._tables[t] = [r[0] for r in cur.fetchall()]
                 org.conn.commit()
                 print("  {}SEED{} {} copiée depuis data".format(DIM, RESET, table))
             except Exception as e:
