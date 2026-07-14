@@ -7,6 +7,9 @@ import os
 import re
 import sys
 
+# Permet `python apex_tests/run_sf_tests.py` depuis n'importe où
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from emusf import ApexParser
 from emusf.pg_test_org import PgTestOrg
 from emusf.sfdx_loader import configure_pg_org

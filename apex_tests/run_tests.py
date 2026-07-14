@@ -3,6 +3,10 @@
 import sys
 import os
 import glob
+
+# Permet `python apex_tests/run_tests.py` depuis n'importe où
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from emusf import PgTestOrg
 from emusf.config import DSN
 from emusf.test_runner import ApexTestInterpreter
@@ -20,7 +24,8 @@ org.create_sobject("Account", {"Name": "TEXT", "Active__c": "INTEGER DEFAULT 0"}
 org.create_sobject("Contact", {"LastName": "TEXT", "FirstName": "TEXT", "AccountId": "TEXT"})
 org.register_relationship("Contacts", "Contact", "AccountId", "Account")
 
-test_dir = sys.argv[1] if len(sys.argv) > 1 else "apex_tests"
+# Par défaut : le répertoire du runner (apex_tests/)
+test_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
 
 # Charger les helpers (classes partagées)
 helpers_dir = os.path.join(test_dir, "helpers")
