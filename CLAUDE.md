@@ -34,7 +34,7 @@ python3 apex_tests/run_sf_tests.py
 
 ## Architecture
 
-**Parsing pipeline**: Apex source → `emusf/antlr/` (default frontend: ANTLR apex-parser grammar, vendored generated parser, `builder.py` maps the parse tree to `ast_nodes`) → `interpreter.py` (execution). SOQL has its own parser in `parser.py`. Trigger entry point is `trigger_parser.py`. The legacy regex/token parser (`lexer.py` + `apex_parser.py` + `token_parser.py`) is kept during the transition — `EMUSF_FRONTEND=legacy` reactivates it; `tests/test_ast_equivalence.py` and `tests/test_parser_oracle.py` cross-check both chains. See `emusf/antlr/README.md` for grammar provenance and regeneration.
+**Parsing pipeline**: Apex source → `emusf/antlr/` (ANTLR apex-parser grammar, vendored generated parser, `builder.py` maps the parse tree to `ast_nodes`) → `interpreter.py` (execution). `apex_parser.py` (`ApexParser`) and `trigger_parser.py` (`TriggerParser`) are thin façades over the ANTLR chain. SOQL has its own parser in `parser.py`. See `emusf/antlr/README.md` for grammar provenance and regeneration.
 
 **AST nodes** (`ast_nodes.py`): All dataclass-based. Expressions (StringLiteral, MethodCall, BinaryOp, etc.) and statements (VarDecl, IfElse, ForEach, DmlInsert, etc.).
 

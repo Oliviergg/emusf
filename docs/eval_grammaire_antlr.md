@@ -1,5 +1,10 @@
 # Évaluation : grammaire ANTLR `apex-dev-tools/apex-parser` pour EMUSF
 
+> **Archive.** Ce rapport a motivé la migration, désormais terminée : la chaîne
+> ANTLR est l'unique parser d'EMUSF (`emusf/antlr/`) et l'ancien parser maison
+> (lexer/apex_parser/token_parser regex) a été supprimé. Document conservé pour
+> la trace de la décision.
+
 Date : 2026-07-14 — Évaluation pratique de la faisabilité de remplacer (ou d'adosser)
 le lexer/parser maison d'EMUSF par un parser Python généré depuis la grammaire ANTLR
 officielle de la communauté Apex.

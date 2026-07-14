@@ -1,9 +1,10 @@
 # Chaîne de parsing ANTLR
 
-Frontend de parsing par défaut d'EMUSF : la grammaire Apex de référence
+Chaîne de parsing d'EMUSF : la grammaire Apex de référence
 [`apex-dev-tools/apex-parser`](https://github.com/apex-dev-tools/apex-parser)
 (v5.1.0, licence BSD-3-Clause — voir `grammar/LICENSE`), compilée vers Python
 par ANTLR, puis mappée vers les `ast_nodes` d'EMUSF par `builder.py`.
+`emusf/apex_parser.py` et `emusf/trigger_parser.py` en sont de simples façades.
 
 ## Contenu
 
@@ -14,16 +15,7 @@ par ANTLR, puis mappée vers les `ast_nodes` d'EMUSF par `builder.py`.
   que l'utilisation d'EMUSF ne requière pas Java. Seul prérequis à
   l'exécution : `antlr4-python3-runtime` (déclaré dans `pyproject.toml`),
   dont la version doit correspondre à celle du générateur (4.13.x).
-- `builder.py` — le visitor qui produit les `ast_nodes`. Il reproduit
-  volontairement certains quirks du parser maison historique (documentés dans
-  sa docstring) pour garantir des AST identiques pendant la transition.
-
-## Bascule de frontend
-
-Le frontend ANTLR est le défaut. `EMUSF_FRONTEND=legacy` réactive l'ancien
-parser maison (`emusf/lexer.py` + `emusf/apex_parser.py`), conservé le temps
-du rodage. Les tests croisés `tests/test_ast_equivalence.py` et
-`tests/test_parser_oracle.py` vérifient l'accord entre les deux chaînes.
+- `builder.py` — le visitor qui produit les `ast_nodes`.
 
 ## Régénérer le parser
 

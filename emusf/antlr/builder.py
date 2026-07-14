@@ -1,19 +1,15 @@
 """Frontend ANTLR : parse Apex via la grammaire apex-dev-tools/apex-parser
 et produit les nœuds ast_nodes d'EMUSF.
 
-C'est le frontend par défaut d'EMUSF (EMUSF_FRONTEND=legacy pour revenir à
-l'ancien parser maison le temps du rodage). Le parse tree ANTLR est mappé vers
-les dataclasses ast_nodes, en reproduisant les formes canoniques historiques
-du parser maison : mêmes nœuds, mêmes conventions (obj='_self' pour les appels
-locaux, SOQL en texte brut, type_name normalisé pour les collections, etc.).
-L'interpréteur est inchangé.
+Le parse tree ANTLR est mappé vers les dataclasses ast_nodes, avec ces
+conventions : obj='_self' pour les appels locaux, SOQL en texte brut,
+type_name normalisé pour les collections.
 
 Le parser généré est vendoré dans emusf/antlr/generated/ (pas de dépendance
 Java à l'exécution) ; la grammaire source et sa licence BSD-3-Clause sont dans
 emusf/antlr/grammar/. Régénération : voir emusf/antlr/README.md.
 
-Quirks du parser maison volontairement reproduits (à assainir une fois la
-chaîne legacy retirée — voir TODO.md) :
+Limitations connues (constructions ignorées faute de support côté interpréteur) :
 - déclaration sans initialisation (`Integer i;`) ignorée
 - statements non supportés par l'interpréteur ignorés (upsert, merge, runAs…)
 - seul le premier catch d'un try est conservé, finally ignoré
