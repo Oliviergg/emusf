@@ -1,41 +1,18 @@
-# Évaluation de la grammaire ANTLR apex-parser
+# Scripts d'évaluation de la grammaire ANTLR
 
-Scripts d'évaluation de la grammaire [`apex-dev-tools/apex-parser`](https://github.com/apex-dev-tools/apex-parser)
-(cible Python) contre le parser maison d'EMUSF. Résultats et conclusions :
-`docs/eval_grammaire_antlr.md`.
+Scripts historiques de l'évaluation qui a validé la grammaire
+[`apex-dev-tools/apex-parser`](https://github.com/apex-dev-tools/apex-parser)
+pour EMUSF (résultats : `docs/eval_grammaire_antlr.md`). La chaîne ANTLR est
+depuis devenue le frontend par défaut, vendorée dans `emusf/antlr/`.
 
-## Reproduire
-
-```bash
-pip install antlr4-python3-runtime
-
-# Récupérer la grammaire (v5.1.0, licence BSD-3-Clause)
-curl -sSfLO https://raw.githubusercontent.com/apex-dev-tools/apex-parser/main/antlr/BaseApexLexer.g4
-curl -sSfLO https://raw.githubusercontent.com/apex-dev-tools/apex-parser/main/antlr/BaseApexParser.g4
-curl -sSfLO https://raw.githubusercontent.com/apex-dev-tools/apex-parser/main/npm/antlr/ApexLexer.g4
-curl -sSfLO https://raw.githubusercontent.com/apex-dev-tools/apex-parser/main/npm/antlr/ApexParser.g4
-
-# Générer le parser Python (nécessite Java 11+)
-curl -sSfL -o antlr.jar https://repo1.maven.org/maven2/org/antlr/antlr4/4.13.2/antlr4-4.13.2-complete.jar
-java -jar antlr.jar -Dlanguage=Python3 -o gen -visitor ApexLexer.g4 ApexParser.g4
-
-# Lancer les évaluations
-python3 eval_grammar.py   # parse tout le corpus .cls/.trigger du repo avec les 2 parsers
-python3 eval_tricky.py    # batterie de constructions Apex avancées
-```
-
-Le répertoire `gen/` (parser généré, ~2 Mo) n'est pas versionné — le régénérer
-avec les commandes ci-dessus.
-
-## Test-oracle
-
-Une fois `gen/` généré, `tests/test_parser_oracle.py` compare automatiquement le
-verdict (accepté/rejeté) du parser maison à celui du parser ANTLR sur tout le
-corpus `.cls`/`.trigger` du repo :
+Les scripts utilisent le parser vendoré — aucune génération nécessaire :
 
 ```bash
-python3 -m pytest tests/test_parser_oracle.py -v
+python3 tools/grammar_eval/eval_grammar.py   # corpus .cls/.trigger : ANTLR vs parser maison (legacy)
+python3 tools/grammar_eval/eval_tricky.py    # batterie de constructions Apex avancées
 ```
 
-Sans `gen/`, le test est sauté (skip) — la suite de tests reste utilisable sans
-Java ni ANTLR.
+Les tests pérennes équivalents vivent dans `tests/test_parser_oracle.py`
+(verdicts accepté/rejeté) et `tests/test_ast_equivalence.py` (AST identiques).
+Pour régénérer le parser après une mise à jour de grammaire :
+`emusf/antlr/README.md`.

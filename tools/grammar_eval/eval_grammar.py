@@ -5,7 +5,7 @@ import sys, time, glob, os
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "gen"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "emusf", "antlr", "generated"))
 sys.path.insert(0, REPO_ROOT)
 
 from antlr4 import InputStream, CommonTokenStream
@@ -39,10 +39,10 @@ def emusf_parse(text, is_trigger):
     try:
         if is_trigger:
             from emusf.trigger_parser import TriggerParser
-            TriggerParser().parse_trigger(text)
+            TriggerParser().parse_trigger_legacy(text)
         else:
             from emusf.apex_parser import ApexParser as EmusfParser
-            EmusfParser().parse_full_class(text)
+            EmusfParser().parse_full_class_legacy(text)
         return []
     except Exception as e:
         return [f"{type(e).__name__}: {e}"]

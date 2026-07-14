@@ -27,12 +27,17 @@ class TriggerParser:
         """
         Parse: trigger Name on SObject (event1, event2) { body }
         Retourne (name, sobject, events, body_stmts)
+
+        Frontend ANTLR par défaut ; EMUSF_FRONTEND=legacy pour le parser maison.
         """
         import os
-        if os.environ.get("EMUSF_FRONTEND") == "antlr":
-            from . import antlr_frontend
-            return antlr_frontend.parse_trigger(source)
+        if os.environ.get("EMUSF_FRONTEND", "antlr") != "legacy":
+            from . import antlr
+            return antlr.parse_trigger(source)
+        return self.parse_trigger_legacy(source)
 
+    def parse_trigger_legacy(self, source: str):
+        """Parse un trigger avec le parser maison (regex)."""
         header_match = re.match(
             r'trigger\s+(\w+)\s+on\s+(\w+)\s*\((.+?)\)\s*\{',
             source, re.DOTALL

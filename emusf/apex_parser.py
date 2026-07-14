@@ -1,7 +1,9 @@
-"""Parser Apex → AST. Transforme du code source Apex en arbre de nœuds.
+"""Parser Apex maison (chaîne legacy) → AST.
 
-EMUSF_FRONTEND=antlr bascule sur le frontend ANTLR (antlr_frontend.py),
-qui produit les mêmes ast_nodes via la grammaire apex-dev-tools/apex-parser.
+Le frontend par défaut est désormais la chaîne ANTLR (emusf/antlr/), qui
+produit les mêmes ast_nodes via la grammaire apex-dev-tools/apex-parser.
+EMUSF_FRONTEND=legacy réactive ce parser maison, conservé le temps du rodage
+(sa suppression est l'étape 3 du TODO).
 """
 
 from __future__ import annotations
@@ -37,11 +39,17 @@ class ApexParser:
         return Block(statements=statements)
 
     def parse_full_class(self, source: str) -> ClassDef:
-        """Parse une classe Apex complète : constantes, méthodes, etc."""
-        if os.environ.get("EMUSF_FRONTEND") == "antlr":
-            from . import antlr_frontend
-            return antlr_frontend.parse_full_class(source)
+        """Parse une classe Apex complète : constantes, méthodes, etc.
 
+        Frontend ANTLR par défaut ; EMUSF_FRONTEND=legacy pour ce parser maison.
+        """
+        if os.environ.get("EMUSF_FRONTEND", "antlr") != "legacy":
+            from . import antlr
+            return antlr.parse_full_class(source)
+        return self.parse_full_class_legacy(source)
+
+    def parse_full_class_legacy(self, source: str) -> ClassDef:
+        """Parse une classe Apex complète avec le parser maison (regex + tokens)."""
         # Extraire le nom et le body de la classe
         class_match = re.search(
             r'(?:public|private|global)\s+'

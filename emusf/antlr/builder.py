@@ -1,19 +1,19 @@
 """Frontend ANTLR : parse Apex via la grammaire apex-dev-tools/apex-parser
 et produit les nœuds ast_nodes d'EMUSF.
 
-Le parse tree ANTLR est mappé vers les mêmes dataclasses que le parser maison
-(apex_parser.py), en reproduisant ses formes canoniques : mêmes nœuds, mêmes
-conventions (obj='_self' pour les appels locaux, SOQL en texte brut, type_name
-normalisé pour les collections, etc.). L'interpréteur reste inchangé.
+C'est le frontend par défaut d'EMUSF (EMUSF_FRONTEND=legacy pour revenir à
+l'ancien parser maison le temps du rodage). Le parse tree ANTLR est mappé vers
+les dataclasses ast_nodes, en reproduisant les formes canoniques historiques
+du parser maison : mêmes nœuds, mêmes conventions (obj='_self' pour les appels
+locaux, SOQL en texte brut, type_name normalisé pour les collections, etc.).
+L'interpréteur est inchangé.
 
-Activation : variable d'environnement EMUSF_FRONTEND=antlr, ou appel direct
-de parse_full_class()/parse_trigger().
+Le parser généré est vendoré dans emusf/antlr/generated/ (pas de dépendance
+Java à l'exécution) ; la grammaire source et sa licence BSD-3-Clause sont dans
+emusf/antlr/grammar/. Régénération : voir emusf/antlr/README.md.
 
-Prérequis : le parser généré dans tools/grammar_eval/gen/ (voir le README de
-tools/grammar_eval/) et antlr4-python3-runtime. is_available() permet de tester.
-
-Quirks du parser maison volontairement reproduits (à assainir quand ce frontend
-deviendra le frontend principal — voir TODO.md) :
+Quirks du parser maison volontairement reproduits (à assainir une fois la
+chaîne legacy retirée — voir TODO.md) :
 - déclaration sans initialisation (`Integer i;`) ignorée
 - statements non supportés par l'interpréteur ignorés (upsert, merge, runAs…)
 - seul le premier catch d'un try est conservé, finally ignoré
@@ -28,7 +28,7 @@ import os
 import re
 import sys
 
-from .ast_nodes import (
+from ..ast_nodes import (
     Expr, StringLiteral, IntegerLiteral, BooleanLiteral, NullLiteral,
     Variable, FieldAccess, BinaryOp, UnaryOp, NewSObject, NewInstance,
     MethodCall, ChainedCall, Ternary, NewList, NewMap, NewSet, NewMapInit,
@@ -57,8 +57,7 @@ def _gen_dir() -> str:
     env = os.environ.get("EMUSF_ANTLR_GEN")
     if env:
         return env
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(repo_root, "tools", "grammar_eval", "gen")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "generated")
 
 
 def _load():
@@ -68,7 +67,7 @@ def _load():
         gen = _gen_dir()
         if not os.path.isfile(os.path.join(gen, "ApexParser.py")):
             raise RuntimeError(
-                "Parser ANTLR non généré dans {} — voir tools/grammar_eval/README.md".format(gen)
+                "Parser ANTLR introuvable dans {} — voir emusf/antlr/README.md".format(gen)
             )
         if gen not in sys.path:
             sys.path.insert(0, gen)

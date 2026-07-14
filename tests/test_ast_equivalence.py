@@ -1,10 +1,8 @@
-"""Équivalence d'AST : frontend ANTLR vs parser maison.
+"""Équivalence d'AST : frontend ANTLR (défaut) vs parser maison (legacy).
 
 Pour chaque fichier du corpus, construit le ClassDef (ou le trigger) avec les
-deux frontends et vérifie que les AST sont identiques. C'est le test de
-validation du mapping AntlrToAst (étape 2 de la migration, voir TODO.md).
-
-Sauté si le parser ANTLR n'est pas généré (tools/grammar_eval/README.md).
+deux chaînes et vérifie que les AST sont identiques. Filet de sécurité de la
+transition ; à retirer avec la chaîne legacy (étape 3 du TODO).
 """
 
 import difflib
@@ -16,11 +14,11 @@ import pytest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-from emusf import antlr_frontend
+from emusf import antlr
 
 pytestmark = pytest.mark.skipif(
-    not antlr_frontend.is_available(),
-    reason="Parser ANTLR non disponible (voir tools/grammar_eval/README.md)",
+    not antlr.is_available(),
+    reason="Chaîne ANTLR indisponible (voir emusf/antlr/README.md)",
 )
 
 
@@ -48,9 +46,9 @@ def test_class_ast_identique(path):
     with open(path, encoding="utf-8") as f:
         source = f.read()
     from emusf.apex_parser import ApexParser
-    maison = ApexParser().parse_full_class(source)
-    antlr = antlr_frontend.parse_full_class(source)
-    _assert_same(maison, antlr)
+    maison = ApexParser().parse_full_class_legacy(source)
+    par_antlr = antlr.parse_full_class(source)
+    _assert_same(maison, par_antlr)
 
 
 @pytest.mark.parametrize(
@@ -60,6 +58,6 @@ def test_trigger_ast_identique(path):
     with open(path, encoding="utf-8") as f:
         source = f.read()
     from emusf.trigger_parser import TriggerParser
-    maison = TriggerParser().parse_trigger(source)
-    antlr = antlr_frontend.parse_trigger(source)
-    _assert_same(maison, antlr)
+    maison = TriggerParser().parse_trigger_legacy(source)
+    par_antlr = antlr.parse_trigger(source)
+    _assert_same(maison, par_antlr)
