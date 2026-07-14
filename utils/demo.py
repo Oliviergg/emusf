@@ -1,5 +1,11 @@
 """Démo de l'émulateur Salesforce."""
 
+import os
+import sys
+
+# Permet `python utils/demo.py` depuis n'importe où
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from emusf import PgTestOrg, ApexContext
 from emusf.config import DSN
 

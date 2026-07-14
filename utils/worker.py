@@ -3,12 +3,15 @@ Redis worker — picks up Apex Queueable jobs and executes them.
 
 Usage:
     docker compose up -d redis
-    python worker.py
+    python utils/worker.py
 """
 
 import os
 import sys
 import signal
+
+# Permet `python utils/worker.py` depuis n'importe où
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from emusf import ApexParser
 from emusf.interpreter import ApexInterpreter
@@ -16,16 +19,13 @@ from emusf.pg_test_org import PgTestOrg
 from emusf.queue.redis_queue import RedisJobQueue
 from emusf.sf_runtime import make_queueable_context
 from emusf.sfdx_loader import configure_pg_org
+from emusf import config
 
-# Config
+# Config (surchargables par variables d'environnement)
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-DSN = os.environ.get("DSN",
-    "host=localhost port=6000 user=postgres "
-    "password=dcc948df3501919f709cb976fa2cb24000be8b12 dbname=biup")
-SF_CLASSES = os.environ.get("SF_CLASSES",
-    "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/classes")
-SFDX_OBJECTS = os.environ.get("SFDX_OBJECTS",
-    "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/objects")
+DSN = os.environ.get("DSN", config.DSN)
+SF_CLASSES = os.environ.get("SF_CLASSES", config.SF_CLASSES)
+SFDX_OBJECTS = os.environ.get("SFDX_OBJECTS", config.SFDX_OBJECTS)
 
 # Colors
 GREEN = "\033[32m"
