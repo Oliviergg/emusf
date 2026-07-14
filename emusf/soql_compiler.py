@@ -250,6 +250,13 @@ class SoqlCompiler:
             elif cmp.op == "!=":
                 return "{} IS NOT NULL".format(col)
 
+        # Comparaison à un booléen : les tables auto-créées stockent tout en
+        # TEXT ('True'/'False'), donc caster la colonne en boolean pour que
+        # 'IsDeleted = false' fonctionne (no-op sur une vraie colonne boolean)
+        if isinstance(value, bool):
+            self.params.append(value)
+            return "({})::boolean {} %s".format(col, cmp.op)
+
         self.params.append(value)
         return "{} {} %s".format(col, cmp.op)
 

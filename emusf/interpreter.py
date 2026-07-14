@@ -53,6 +53,28 @@ def _unescape_html(s):
     return html.unescape(s)
 
 
+def _field_of(record, field):
+    """Accès champ insensible à la casse sur un SObject (dict)."""
+    if not isinstance(record, dict):
+        return None
+    if field in record:
+        return record[field]
+    fl = field.lower()
+    for k, v in record.items():
+        if k.lower() == fl:
+            return v
+    return None
+
+
+def _is_soql_literal(s) -> bool:
+    """True si la chaîne est un littéral SOQL/SOSL inline '[SELECT ...]'."""
+    if not isinstance(s, str):
+        return False
+    t = s.strip()
+    return t.startswith("[") and t.endswith("]") and \
+        t[1:].lstrip()[:6].upper() in ("SELECT", "FIND")
+
+
 def _blob_bytes(val) -> bytes:
     """Normalise un Blob Apex en bytes : accepte le wrapper
     {'_type': 'Blob', '_data': ...}, des bytes bruts ou une chaîne."""
@@ -229,7 +251,13 @@ class ApexInterpreter:
                     self._exec_stmt(s)
 
         elif isinstance(stmt, ForEach):
-            items = self._eval(stmt.list_expr)
+            # SOQL inline : for (X x : [SELECT ...]) — le builder produit un
+            # StringLiteral '[SELECT ...]' qu'il faut exécuter, pas itérer dessus
+            if isinstance(stmt.list_expr, StringLiteral) and \
+                    _is_soql_literal(stmt.list_expr.value):
+                items = self.org.execute_soql(stmt.list_expr.value, context=self.variables)
+            else:
+                items = self._eval(stmt.list_expr)
             if items is None or not hasattr(items, '__iter__') or isinstance(items, (str, dict)):
                 items = [] if items is None or isinstance(items, bool) else [items]
             for item in items:
@@ -670,6 +698,15 @@ class ApexInterpreter:
             return self._eval(expr.else_expr)
 
         elif isinstance(expr, ChainedCall):
+            # [SELECT ... ].champ — accès direct au champ du 1er enregistrement
+            if isinstance(expr.target, StringLiteral) and \
+                    _is_soql_literal(expr.target.value):
+                rows = self.org.execute_soql(expr.target.value, context=self.variables)
+                if not expr.args:  # accès champ, pas appel de méthode
+                    if not rows:
+                        raise ApexException("List has no rows for assignment to SObject")
+                    return _field_of(rows[0], expr.method)
+
             target = self._eval(expr.target)
             args = [self._eval(a) for a in expr.args]
 
