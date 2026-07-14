@@ -25,7 +25,10 @@ pytestmark = pytest.mark.skipif(
 def _corpus(extension):
     files = sorted(glob.glob(os.path.join(REPO_ROOT, "**", "*." + extension),
                              recursive=True))
-    return [f for f in files if os.sep + "." not in f]
+    # Exclut les répertoires cachés et les scénarios LIVE (fixtures
+    # d'intégration, pas du corpus de parité parser legacy/ANTLR)
+    return [f for f in files if os.sep + "." not in f
+            and os.sep + "scenarios" + os.sep not in f]
 
 
 def _assert_same(maison, antlr):

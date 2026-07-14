@@ -3,8 +3,13 @@
  *
  * Pour chaque marché : crée une analyse au statut '01 - New', déroule l'étape
  * QUALIFY (appel LLM LIVE via OpenRouter), et affiche le verdict. Résumé final
- * qualifiés / rejetés — exactement ce que fait la qualification de masse de
- * l'orchestrateur, mais exécutée localement sur les vraies données.
+ * qualifiés / rejetés — la qualification de masse de l'orchestrateur exécutée
+ * localement sur les vraies données.
+ *
+ * NB : l'entrée d'orchestration XPLOrchestrator.executeNextAction dispatche
+ * cette étape via la file de jobs Queueable (Platform Events + JobEventTrigger,
+ * désormais exécutés par l'émulateur) ; ici on appelle directement le cœur du
+ * travail (doProcessAnalyse) pour un lot déterministe et rapide.
  */
 public class Main {
     // Marchés publics réels (schéma data) — types d'avis variés

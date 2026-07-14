@@ -132,6 +132,66 @@ class ApexInterpreter:
         self._current_instance = None  # Instance en cours (pour this)
         self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
         self._http_mock = None  # Instance HttpCalloutMock pour Test.setMock
+        self.job_queue = None  # File de Queueables (SyncJobQueue) si branchée
+        # Triggers de Platform Event : {sobject_lower: (event_var, body_stmts)}
+        self.platform_event_triggers = {}
+        self._flushing_jobs = False  # garde de ré-entrance pour System.enqueueJob
+        # Budget d'opérations asynchrones (Platform Events + Queueables) par run.
+        # En réel chaque event/job est une transaction séparée avec des limites
+        # de gouverneur ; en synchrone une chaîne qui se ré-enfile (polling
+        # CheckQueueJob, cascade de la machine à états) tournerait sans fin.
+        self.async_budget = 200
+
+    def _soql_context(self):
+        """Contexte de résolution des binds SOQL : variables locales + champs
+        de l'instance courante (pour ':champ' référençant this.champ dans une
+        méthode d'instance)."""
+        if self._current_instance is None:
+            return self.variables
+        ctx = dict(self._current_instance)
+        ctx.update(self.variables)  # les locales masquent les champs d'instance
+        return ctx
+
+    def register_platform_event_trigger(self, sobject, event_var, body_stmts):
+        """Enregistre un trigger sur un Platform Event (__e), déclenché par
+        EventBus.publish plutôt que par du DML."""
+        self.platform_event_triggers[sobject.lower()] = (event_var, body_stmts)
+
+    def _fire_platform_event(self, events, _depth=[0]):
+        """Déclenche les triggers de Platform Event pour une liste d'events
+        publiés (dicts avec _sobject_type). Sémantique 'after insert'.
+
+        Garde de profondeur : en réel les Platform Events sont asynchrones
+        (transactions séparées) ; en synchrone une chaîne d'events pourrait
+        récurser sans fin."""
+        if _depth[0] >= 40 or self.async_budget <= 0:
+            return
+        self.async_budget -= 1
+        by_type = {}
+        for evt in events:
+            if isinstance(evt, dict):
+                st = (evt.get("_sobject_type") or "").lower()
+                by_type.setdefault(st, []).append(evt)
+        for st, evs in by_type.items():
+            handler = self.platform_event_triggers.get(st)
+            if not handler:
+                continue
+            event_var, body_stmts = handler
+            saved_trigger = self.variables.get("Trigger")
+            self.variables["Trigger"] = {"new": evs, "old": [], "isInsert": True,
+                                         "isAfter": True, "isExecuting": True}
+            _depth[0] += 1
+            try:
+                for stmt in body_stmts:
+                    self._exec_stmt(stmt)
+            except ReturnException:
+                pass
+            finally:
+                _depth[0] -= 1
+                if saved_trigger is not None:
+                    self.variables["Trigger"] = saved_trigger
+                else:
+                    self.variables.pop("Trigger", None)
 
     def load_class(self, path_or_source: str, is_path: bool = True):
         """Charge une classe Apex dans l'interpréteur."""
@@ -245,7 +305,7 @@ class ApexInterpreter:
                 raise Exception("'{}' n'est pas un SObject".format(stmt.obj))
 
         elif isinstance(stmt, SOQLAssign):
-            results = self.org.execute_soql(stmt.soql, context=self.variables)
+            results = self.org.execute_soql(stmt.soql, context=self._soql_context())
             # SELECT COUNT() FROM ... → assign integer
             soql_upper = stmt.soql.upper()
             if "COUNT()" in soql_upper and "SELECT COUNT()" in soql_upper:
@@ -284,7 +344,7 @@ class ApexInterpreter:
             # StringLiteral '[SELECT ...]' qu'il faut exécuter, pas itérer dessus
             if isinstance(stmt.list_expr, StringLiteral) and \
                     _is_soql_literal(stmt.list_expr.value):
-                items = self.org.execute_soql(stmt.list_expr.value, context=self.variables)
+                items = self.org.execute_soql(stmt.list_expr.value, context=self._soql_context())
             else:
                 items = self._eval(stmt.list_expr)
             if items is None or not hasattr(items, '__iter__') or isinstance(items, (str, dict)):
@@ -305,7 +365,7 @@ class ApexInterpreter:
             # List<X> -> toutes les lignes)
             if isinstance(stmt.value, StringLiteral) and \
                     _is_soql_literal(stmt.value.value):
-                rows = self.org.execute_soql(stmt.value.value, context=self.variables)
+                rows = self.org.execute_soql(stmt.value.value, context=self._soql_context())
                 rt = (self._current_return_type or "").strip()
                 is_collection = rt[:5].lower() in ("list<", "set<", "map<") or rt.endswith("[]")
                 if is_collection:
@@ -741,7 +801,7 @@ class ApexInterpreter:
             # [SELECT ... ].champ — accès direct au champ du 1er enregistrement
             if isinstance(expr.target, StringLiteral) and \
                     _is_soql_literal(expr.target.value):
-                rows = self.org.execute_soql(expr.target.value, context=self.variables)
+                rows = self.org.execute_soql(expr.target.value, context=self._soql_context())
                 if not expr.args:  # accès champ, pas appel de méthode
                     if not rows:
                         raise ApexException("List has no rows for assignment to SObject")
@@ -818,10 +878,14 @@ class ApexInterpreter:
             if isinstance(target, dict) and target.get("_type") == "SchemaSObjectTypeMap":
                 return self._call_on_value(target, expr.method, args)
 
-            # Field access on dict when no args
-            if not args and isinstance(target, dict) and expr.method in target:
-                return target[expr.method]
-            if not args and isinstance(target, dict) and expr.method not in target:
+            # Field access on dict when no args — UNIQUEMENT pour les records
+            # (pas les objets typés built-in comme ApexType/Blob/Matcher dont
+            # les méthodes sans argument, ex: newInstance(), doivent s'exécuter)
+            is_typed_object = isinstance(target, dict) and "_type" in target \
+                and "_class" not in target
+            if not args and isinstance(target, dict) and not is_typed_object:
+                if expr.method in target:
+                    return target[expr.method]
                 for k, v in target.items():
                     if k.lower() == expr.method.lower():
                         return v
@@ -859,9 +923,28 @@ class ApexInterpreter:
         else:
             raise Exception("Expression inconnue: {}".format(type(expr).__name__))
 
+    # Namespaces système built-in : Apex est insensible à la casse, donc
+    # 'system.enqueueJob' == 'System.enqueueJob'. On normalise la casse quand
+    # ce n'est ni une variable ni une classe utilisateur.
+    _BUILTIN_NAMESPACES = {
+        n.lower(): n for n in (
+            "System", "Test", "Date", "DateTime", "Time", "Math", "JSON",
+            "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL",
+            "UserInfo", "Http", "Limits", "EventBus", "Type", "UUID",
+            "ApexPages", "Messaging",
+        )
+    }
+
     def _exec_method_call(self, call: MethodCall):
         """Exécute un appel de méthode sur un objet ou une collection."""
         obj = self.variables.get(call.obj)
+        # Normaliser la casse d'un namespace built-in (sauf si masqué par une
+        # variable locale ou une classe utilisateur du même nom)
+        if (obj is None and call.obj not in self.classes
+                and call.obj.lower() in self._BUILTIN_NAMESPACES
+                and call.obj not in self._BUILTIN_NAMESPACES.values()):
+            call = MethodCall(obj=self._BUILTIN_NAMESPACES[call.obj.lower()],
+                              method=call.method, args=call.args)
         args = [self._eval(a) for a in call.args]
         method = call.method
 
@@ -1141,10 +1224,22 @@ class ApexInterpreter:
                 print("DEBUG: {}".format(val))
                 return None
             elif method == "enqueueJob":
-                # Queueable pattern
+                # Queueable : enqueue puis exécution synchrone (comme
+                # Test.stopTest). La garde _flushing_jobs évite qu'un enqueue
+                # imbriqué relance un second flush — le flush courant le prend.
                 instance = args[0] if args else None
+                # enqueueJob(job, delayInMinutes) : job de polling différé
+                # (ex: CheckQueueJob) — ignoré, sinon boucle infinie en synchrone
+                if len(args) >= 2:
+                    return None
                 if self.job_queue and isinstance(instance, dict) and "_class" in instance:
                     job_id = self.job_queue.enqueue(instance)
+                    if not self._flushing_jobs:
+                        self._flushing_jobs = True
+                        try:
+                            self.job_queue.flush(self)
+                        finally:
+                            self._flushing_jobs = False
                     return job_id
                 return None
             elif method == "attachFinalizer":
@@ -1167,8 +1262,12 @@ class ApexInterpreter:
         if call.obj == "System" and method == "Label":
             return ""
 
-        # EventBus.publish — platform events (no-op)
+        # EventBus.publish — déclenche les triggers de Platform Event en contexte
         if call.obj == "EventBus" and method == "publish":
+            published = args[0] if args else None
+            events = published if isinstance(published, list) else [published]
+            if self.platform_event_triggers:
+                self._fire_platform_event([e for e in events if isinstance(e, dict)])
             return None
 
         # Type.forName — reflection
@@ -1230,7 +1329,7 @@ class ApexInterpreter:
                 return [{"_type": "SaveResult", "success": True}]
             if method == "query":
                 soql = args[0] if args else ""
-                return self.org.execute_soql("[{}]".format(soql), context=self.variables)
+                return self.org.execute_soql("[{}]".format(soql), context=self._soql_context())
 
         # EncodingUtil static methods
         if call.obj == "EncodingUtil":

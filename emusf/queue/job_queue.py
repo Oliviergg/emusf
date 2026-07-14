@@ -49,17 +49,22 @@ class SyncJobQueue:
             if not class_def:
                 continue
 
-            # Find execute(QueueableContext) method
+            # Find execute(QueueableContext) method — attention aux surcharges :
+            # ces jobs implémentent aussi Finalizer (execute(FinalizerContext)),
+            # donc methods['execute'] peut être la mauvaise variante ; on
+            # cherche la bonne signature dans methods ET overloads.
             execute_method = None
-            # Search in class + parent chain
             chain = interpreter._resolve_class_chain(class_def)
             for cls in chain:
+                candidates = list(getattr(cls, "overloads", {}).get("execute", []))
                 if "execute" in cls.methods:
-                    m = cls.methods["execute"]
-                    # The execute method takes QueueableContext
-                    if m.params and m.params[0][0] in ("QueueableContext",):
+                    candidates.append(cls.methods["execute"])
+                for m in candidates:
+                    if m.params and m.params[0][0] == "QueueableContext":
                         execute_method = m
                         break
+                if execute_method:
+                    break
 
             if not execute_method:
                 continue

@@ -31,7 +31,8 @@ def _corpus():
         glob.glob(os.path.join(REPO_ROOT, "**", "*.cls"), recursive=True)
         + glob.glob(os.path.join(REPO_ROOT, "**", "*.trigger"), recursive=True)
     )
-    return [f for f in files if os.sep + "." not in f]
+    return [f for f in files if os.sep + "." not in f
+            and os.sep + "scenarios" + os.sep not in f]
 
 
 def _antlr_error(text: str, is_trigger: bool):

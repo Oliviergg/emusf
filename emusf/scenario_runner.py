@@ -186,12 +186,33 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
 
     # --- 4. Préparer l'interpréteur avec toutes les classes ---
     interp = ApexTestInterpreter(org, named_credentials=named_credentials)
+    from emusf.queue import SyncJobQueue
+    interp.job_queue = SyncJobQueue()  # exécution synchrone des Queueables
     for name, cls in classes.items():
         interp.classes[name] = cls
         for cname, (ctype, expr) in cls.constants.items():
             try:
                 interp.variables["{}.{}".format(name, cname)] = (
                     interp._eval(expr) if expr is not None else None)
+            except Exception:
+                pass
+
+    # --- 4a. Triggers de Platform Event (__e) — déclenchés par EventBus.publish.
+    # Chargés depuis le répertoire triggers/ du projet SFDX (ex: JobEventTrigger
+    # qui pilote la file de jobs Queueable).
+    triggers_dir = os.path.join(os.path.dirname(SF_CLASSES), "triggers")
+    if os.path.isdir(triggers_dir):
+        from emusf.trigger_parser import TriggerParser
+        for fname in sorted(os.listdir(triggers_dir)):
+            if not fname.endswith(".trigger"):
+                continue
+            try:
+                src = open(os.path.join(triggers_dir, fname)).read()
+                name, sobject, events, body = TriggerParser().parse_trigger(src)
+                if sobject.endswith("__e"):
+                    # event var = la variable de boucle Trigger.new (souvent 'evt')
+                    interp.register_platform_event_trigger(sobject, "evt", body)
+                    print("  {}PEVT{} {} sur {}".format(DIM, RESET, name, sobject))
             except Exception:
                 pass
 
