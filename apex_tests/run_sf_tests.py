@@ -128,7 +128,8 @@ def run_test_class(test_class_name, all_classes, parser):
         org.sf_schema = run_test_class._sfdx_registry
 
     for method_name in test_methods:
-        org.truncate_all()
+        # Isolation à la Salesforce (seeAllData=false) : org vide à chaque test
+        org.truncate_schema()
 
         interp = SfTestInterpreter(org)
 
@@ -140,10 +141,12 @@ def run_test_class(test_class_name, all_classes, parser):
                 except Exception:
                     pass
 
-        # Charger les inner classes du fichier test
+        # Charger la classe de test (helpers statiques et inner classes) et
+        # en faire la classe courante pour que ses méthodes locales résolvent
         try:
             test_class_def = parser.parse_full_class(test_source)
             interp.classes[test_class_def.name] = test_class_def
+            interp._current_class = test_class_def
             for ic_name, ic_def in test_class_def.inner_classes.items():
                 interp.classes[ic_name] = ic_def
         except Exception:
@@ -157,6 +160,20 @@ def run_test_class(test_class_name, all_classes, parser):
                     interp._exec_block(setup_ast)
                 except Exception:
                     pass  # Setup failure shouldn't block the test
+
+            # Blocs static { } des classes : lazy en vrai Salesforce, donc
+            # après le @testSetup (ex: lecture de custom settings insérés là)
+            for cls_name, cls in list(interp.classes.items()):
+                if getattr(cls, "static_init", None):
+                    prev_cls = interp._current_class
+                    interp._current_class = cls
+                    try:
+                        for stmt in cls.static_init:
+                            interp._exec_stmt(stmt)
+                    except Exception:
+                        pass
+                    finally:
+                        interp._current_class = prev_cls
 
             ast = parser.parse_class(test_source, method_name)
             interp._exec_block(ast)

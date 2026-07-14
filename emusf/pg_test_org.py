@@ -97,6 +97,33 @@ class PgTestOrg(PgOrg):
         cur.execute("ROLLBACK TO SAVEPOINT test_start")
         cur.close()
 
+    def truncate_schema(self):
+        """Vide TOUTES les tables connues du schéma — isolation de test à la
+        Salesforce (seeAllData=false) : chaque test démarre sur une org vide,
+        y compris ce que d'autres processus (scénarios, seeds) ont écrit."""
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
+        tables = list(self._tables.keys())
+        if tables:
+            cur = self.conn.cursor()
+            try:
+                cur.execute("TRUNCATE {} CASCADE".format(
+                    ", ".join("{}.{}".format(self.schema_name, t) for t in tables)))
+            except Exception:
+                self.conn.rollback()
+                for table in tables:
+                    try:
+                        cur.execute("TRUNCATE {}.{} CASCADE".format(
+                            self.schema_name, table))
+                    except Exception:
+                        self.conn.rollback()
+            self.conn.commit()
+            cur.close()
+        self._dirty_tables = set()
+        self._id_counters = {}
+
     def truncate_all(self):
         """Vide uniquement les tables qui ont été modifiées."""
         try:
@@ -149,21 +176,41 @@ class PgTestOrg(PgOrg):
         table = sobject.lower()
         if table in self._tables:
             return
-        cols = {sf_to_pg_column(k): "TEXT" for r in records for k in r.keys()
-                if k != "Id" and not k.startswith("_")}
-        if not cols:
-            return
+        # Tout SObject Salesforce a un champ Name (auto-number à défaut)
+        cols = {"name": "TEXT"}
+        cols.update({sf_to_pg_column(k): "TEXT" for r in records for k in r.keys()
+                     if k != "Id" and not k.startswith("_")})
         self.create_sobject(sobject, {k: v for k, v in cols.items()})
 
     def _execute(self, cq):
-        """Comme PgOrg._execute, mais une table absente renvoie 0 lignes :
-        les tables sont créées paresseusement à l'insert, alors que dans
-        Salesforce l'objet existe toujours (SELECT avant tout insert = vide)."""
+        """Comme PgOrg._execute, avec la sémantique Salesforce des schémas :
+        - table absente → 0 lignes (création lazy à l'insert, mais dans
+          Salesforce l'objet existe toujours)
+        - colonne absente → ajoutée en TEXT (le champ existe toujours dans
+          Salesforce, valeur null tant que rien n'est écrit) puis retry."""
         import psycopg2.errors
-        try:
-            return super()._execute(cq)
-        except psycopg2.errors.UndefinedTable:
-            return []
+        import re as _re
+        for _ in range(12):  # borne les ALTER successifs
+            try:
+                return super()._execute(cq)
+            except psycopg2.errors.UndefinedTable:
+                return []
+            except psycopg2.errors.UndefinedColumn as e:
+                m = _re.search(r'column (?:"|\w+\.)?([a-z0-9_]+)"? does not exist',
+                               str(e))
+                if not m:
+                    raise
+                column = m.group(1)
+                table = cq.sobject.lower()
+                if table not in self._tables or column in self._tables[table]:
+                    raise  # colonne d'une jointure ou déjà tentée : abandonner
+                cur = self.conn.cursor()
+                cur.execute("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT".format(
+                    self.schema_name, table, column))
+                cur.close()
+                self.conn.commit()
+                self._tables[table].append(column)
+        return super()._execute(cq)
 
     def _auto_extend_table(self, sobject: str, records: list):
         """Ajoute les colonnes manquantes (TEXT) quand un record porte des
@@ -243,10 +290,41 @@ class PgTestOrg(PgOrg):
 
         self._fire_triggers("after_insert", sobject, records)
 
+        # Salesforce Files : l'insert d'un ContentVersion crée le
+        # ContentDocument et, si FirstPublishLocationId est fourni, le
+        # ContentDocumentLink vers l'enregistrement
+        if sobject.lower() == "contentversion":
+            self._simulate_content_documents(records)
+
         return DmlResult(
             success=True,
             record_ids=[r.get("Id", r.get("id")) for r in records],
         )
+
+    def _simulate_content_documents(self, records: list):
+        for record in records:
+            cv_id = record.get("Id", record.get("id"))
+            doc_id = self._generate_id("ContentDocument")
+            title = record.get("Title", record.get("title", ""))
+            self.insert("ContentDocument", [{
+                "Id": doc_id,
+                "Title": title,
+                "LatestPublishedVersionId": cv_id,
+                "FileExtension": record.get("PathOnClient", "").rsplit(".", 1)[-1]
+                if record.get("PathOnClient") and "." in record.get("PathOnClient") else "",
+            }])
+            # Renseigner ContentDocumentId sur le ContentVersion
+            record["ContentDocumentId"] = doc_id
+            self.update("ContentVersion", [{"Id": cv_id, "ContentDocumentId": doc_id}])
+            first_publish = record.get("FirstPublishLocationId",
+                                       record.get("firstpublishlocationid"))
+            if first_publish:
+                self.insert("ContentDocumentLink", [{
+                    "ContentDocumentId": doc_id,
+                    "LinkedEntityId": first_publish,
+                    "ShareType": "V",
+                    "Visibility": "AllUsers",
+                }])
 
     def update(self, sobject: str, records: list) -> DmlResult:
         """Update des enregistrements. Chaque record doit avoir un Id."""

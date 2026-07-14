@@ -73,8 +73,12 @@ class SoqlParser:
 
         limit = None
         if self.match(TT.LIMIT):
-            tok = self.expect(TT.INTEGER)
-            limit = int(tok.value)
+            if self.check(TT.BIND):
+                tok = self.advance()
+                limit = SoqlBindVar(path=tok.value)  # résolu à la compilation
+            else:
+                tok = self.expect(TT.INTEGER)
+                limit = int(tok.value)
 
         return SoqlSelect(
             fields=fields,

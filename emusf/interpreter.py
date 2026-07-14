@@ -471,6 +471,10 @@ class ApexInterpreter:
             # System.Label → return empty string for custom labels
             if expr.obj == "System" and expr.field == "Label":
                 return {"_type": "SystemLabel"}
+
+            # Schema.sObjectType → map des describes (Schema.sObjectType.X.isAccessible())
+            if expr.obj == "Schema" and expr.field == "sObjectType":
+                return {"_type": "SchemaSObjectTypeMap"}
             # ParentJobResult.SUCCESS / FAILURE
             if expr.obj == "ParentJobResult":
                 return expr.field
@@ -731,6 +735,11 @@ class ApexInterpreter:
                     return {"_type": "PageReference", "url": "/" + (target.get("Id") or "")}
                 if expr.method == "getRecord":
                     return {k: v for k, v in target.items() if k != "_type"}
+
+            # Schema.sObjectType.X → DescribeSObjectResult (avant le fallback
+            # d'accès champ, sinon .Lead renverrait None)
+            if isinstance(target, dict) and target.get("_type") == "SchemaSObjectTypeMap":
+                return self._call_on_value(target, expr.method, args)
 
             # Field access on dict when no args
             if not args and isinstance(target, dict) and expr.method in target:
@@ -1598,6 +1607,12 @@ class ApexInterpreter:
         }
         if method in methods:
             return methods[method]()
+        # Méthodes d'Id (les Id sont des chaînes) : getSObjectType via le préfixe
+        if method == "getSObjectType":
+            from .dml import SOBJECT_PREFIX
+            prefix = s[:3]
+            name = next((k for k, v in SOBJECT_PREFIX.items() if v == prefix), None)
+            return {"_type": "SObjectType", "name": name or "Name"}
         raise Exception("String.{}() non supporté".format(method))
 
     def _call_list_method(self, lst, method, args):
@@ -1704,6 +1719,24 @@ class ApexInterpreter:
                 return data.decode('utf-8') if isinstance(data, bytes) else str(data)
             if method == "size":
                 return len(data) if isinstance(data, bytes) else len(str(data).encode('utf-8'))
+
+        # Schema.sObjectType.X → DescribeSObjectResult (token Apex) ; permet
+        # Schema.sObjectType.Lead.isAccessible() et .fields
+        if m.get("_type") == "SchemaSObjectTypeMap":
+            return {
+                "_type": "DescribeSObjectResult",
+                "name": method,
+                "label": method,
+                "labelPlural": method + "s",
+                "keyPrefix": method[:3].lower(),
+                "isCustom": method.endswith("__c"),
+                "isAccessible": True,
+                "isCreateable": True,
+                "isUpdateable": True,
+                "isDeletable": True,
+                "isQueryable": True,
+                "isSearchable": True,
+            }
 
         # SObjectType object (Schema describe)
         if m.get("_type") == "SObjectType":

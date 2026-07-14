@@ -72,6 +72,7 @@ SOBJECT_PREFIX = {
     "CampaignMember": "00v",
     "ContentDocument": "069",
     "ContentVersion": "068",
+    "ContentDocumentLink": "06A",
     "Attachment": "00P",
     "Note": "002",
     "EmailMessage": "02s",

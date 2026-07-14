@@ -166,7 +166,10 @@ class SoqlCompiler:
 
         # LIMIT
         if ast.limit is not None:
-            sql += " LIMIT {}".format(ast.limit)
+            limit = ast.limit
+            if isinstance(limit, SoqlBindVar):  # LIMIT :variable
+                limit = int(self._resolve_bind(limit.path))
+            sql += " LIMIT {}".format(int(limit))
 
         return CompiledQuery(
             sql=sql,
