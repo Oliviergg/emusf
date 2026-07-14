@@ -155,6 +155,32 @@ class PgTestOrg(PgOrg):
             return
         self.create_sobject(sobject, {k: v for k, v in cols.items()})
 
+    def _auto_extend_table(self, sobject: str, records: list):
+        """Ajoute les colonnes manquantes (TEXT) quand un record porte des
+        champs inconnus de la table — miroir de _auto_create_table pour les
+        tables existantes (ex: champ posé par un trigger ou un flow)."""
+        table = sobject.lower()
+        if table not in self._tables:
+            return
+        known = set(self._tables[table])
+        new_cols = []
+        for record in records:
+            for key in record.keys():
+                if key.lower() == "id" or key.startswith("_"):
+                    continue
+                col = sf_to_pg_column(key)
+                if col not in known:
+                    new_cols.append(col)
+                    known.add(col)
+        if not new_cols:
+            return
+        cur = self.conn.cursor()
+        for col in new_cols:
+            cur.execute("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT".format(
+                self.schema_name, table, col))
+        cur.close()
+        self._tables[table].extend(new_cols)
+
     def insert(self, sobject: str, records: list) -> DmlResult:
         """Insert des enregistrements. Auto-génère les Id. Auto-crée la table si absente."""
         for record in records:
@@ -163,8 +189,9 @@ class PgTestOrg(PgOrg):
 
         self._fire_triggers("before_insert", sobject, records)
 
-        # Auto-create table if needed
+        # Auto-create table if needed (et auto-extend si elle existe déjà)
         self._auto_create_table(sobject, records)
+        self._auto_extend_table(sobject, records)
         self._dirty_tables.add(sobject.lower())
 
         cur = self.conn.cursor()
@@ -214,6 +241,7 @@ class PgTestOrg(PgOrg):
     def update(self, sobject: str, records: list) -> DmlResult:
         """Update des enregistrements. Chaque record doit avoir un Id."""
         self._fire_triggers("before_update", sobject, records)
+        self._auto_extend_table(sobject, records)
         self._dirty_tables.add(sobject.lower())
 
         cur = self.conn.cursor()

@@ -2417,7 +2417,7 @@ class ApexInterpreter:
             for name, (type_name, expr) in class_def.constants.items():
                 key = "{}.{}".format(class_def.name, name)
                 if key not in new_scope:
-                    new_scope[key] = self._eval(expr)
+                    new_scope[key] = self._eval(expr) if expr is not None else None
                 new_scope[name] = new_scope[key]
             # Injecter les paramètres du constructeur
             for i, (ptype, pname) in enumerate(constructor.params):
@@ -2462,7 +2462,7 @@ class ApexInterpreter:
         for name, (type_name, expr) in class_def.constants.items():
             key = "{}.{}".format(class_def.name, name)
             if key not in new_scope:
-                new_scope[key] = self._eval(expr)
+                new_scope[key] = self._eval(expr) if expr is not None else None
             new_scope[name] = new_scope[key]
         for i, (ptype, pname) in enumerate(method.params):
             new_scope[pname] = args[i] if i < len(args) else None

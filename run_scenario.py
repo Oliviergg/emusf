@@ -162,7 +162,8 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
         interp.classes[name] = cls
         for cname, (ctype, expr) in cls.constants.items():
             try:
-                interp.variables["{}.{}".format(name, cname)] = interp._eval(expr)
+                interp.variables["{}.{}".format(name, cname)] = (
+                    interp._eval(expr) if expr is not None else None)
             except Exception:
                 pass
 

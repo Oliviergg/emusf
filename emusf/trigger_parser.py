@@ -95,7 +95,8 @@ def load_trigger(org, path: str, classes: dict = None):
                 for cls_name, cls_def in shared_classes.items():
                     interp.classes[cls_name] = cls_def
                     for cname, (ctype, expr) in cls_def.constants.items():
-                        interp.variables["{}.{}".format(cls_name, cname)] = interp._eval(expr)
+                        interp.variables["{}.{}".format(cls_name, cname)] = (
+                        interp._eval(expr) if expr is not None else None)
             interp.variables["Trigger"] = {
                 "new": records,
                 "old": old_records or [],

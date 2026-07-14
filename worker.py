@@ -75,7 +75,8 @@ def execute_job(job_data, org, all_classes, parser):
         interp.classes[name] = cls
         for cname, (ctype, expr) in cls.constants.items():
             try:
-                interp.variables["{}.{}".format(name, cname)] = interp._eval(expr)
+                interp.variables["{}.{}".format(name, cname)] = (
+                    interp._eval(expr) if expr is not None else None)
             except Exception:
                 pass
 
