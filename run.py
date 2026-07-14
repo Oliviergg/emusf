@@ -10,7 +10,9 @@ Orgs :
     --org test (défaut) : bac à sable PostgreSQL (schéma test) — DML autorisé,
         données de démo (--no-seed pour désactiver), triggers d'apex/
         chargés (--no-triggers pour désactiver)
-    --org data : données Salesforce exportées (schéma data) — lecture seule
+    --org data : données Salesforce exportées (schéma data) — DML dans une
+        transaction annulée en fin de run (--commit pour persister),
+        triggers désactivés (--triggers pour activer), schéma strict
 """
 
 import argparse
@@ -18,9 +20,8 @@ import glob
 import os
 import sys
 
-from emusf import PgTestOrg, ApexParser, ApexInterpreter
+from emusf import PgTestOrg, PgDataOrg, ApexParser, ApexInterpreter
 from emusf.config import DSN, SFDX_OBJECTS
-from emusf.pg_org import PgOrg
 from emusf.ast_printer import print_ast
 from emusf.trigger_parser import load_trigger
 
@@ -53,10 +54,17 @@ def _seed_demo(org):
     ])
 
 
-def make_org(kind: str, seed: bool = True, triggers: bool = True):
+def _load_apex_triggers(org):
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    for trigger_file in sorted(glob.glob(os.path.join(repo_root, "apex", "*.trigger"))):
+        load_trigger(org, trigger_file)
+
+
+def make_org(kind: str, seed: bool = True, triggers: bool = True,
+             data_triggers: bool = False):
     """Construit l'org : bac à sable (test) ou données exportées (data)."""
     if kind == "data":
-        org = PgOrg(DSN, schema="data")
+        org = PgDataOrg(DSN, schema="data", triggers_enabled=data_triggers)
         # Relations lookup pour les sous-requêtes SOQL, si le projet SFDX est là
         if os.path.isdir(SFDX_OBJECTS):
             from emusf.sfdx_loader import configure_pg_org
@@ -64,6 +72,8 @@ def make_org(kind: str, seed: bool = True, triggers: bool = True):
                 configure_pg_org(org, SFDX_OBJECTS, ["Account", "Contact"])
             except Exception:
                 pass
+        if data_triggers:
+            _load_apex_triggers(org)
         return org
 
     org = PgTestOrg(DSN, schema="test")
@@ -71,10 +81,24 @@ def make_org(kind: str, seed: bool = True, triggers: bool = True):
     if seed:
         _seed_demo(org)
     if triggers:
-        repo_root = os.path.dirname(os.path.abspath(__file__))
-        for trigger_file in sorted(glob.glob(os.path.join(repo_root, "apex", "*.trigger"))):
-            load_trigger(org, trigger_file)
+        _load_apex_triggers(org)
     return org
+
+
+def finalize_org(org, do_commit: bool) -> None:
+    """Fin de run sur l'org data : commit explicite ou rollback par défaut."""
+    if not isinstance(org, PgDataOrg):
+        return
+    n = org.pending_dml
+    if do_commit:
+        org.commit()
+        if n:
+            print("{}{} écritures DML — COMMIT{}".format(GREEN, n, RESET))
+    else:
+        org.rollback_all()
+        if n:
+            print("{}{} écritures DML annulées (rollback par défaut — "
+                  "--commit pour persister){}".format(YELLOW, n, RESET))
 
 
 # --------------------------------------------------------------------- #
@@ -104,9 +128,15 @@ def run_repl(org, show_ast: bool) -> None:
     parser = ApexParser()
     interpreter = ApexInterpreter(org)
 
-    read_only = not isinstance(org, PgTestOrg)
+    if isinstance(org, PgTestOrg):
+        mode = " (DML + triggers)"
+    elif isinstance(org, PgDataOrg):
+        mode = " (DML, rollback à la fin{})".format(
+            ", triggers" if org.triggers_enabled else "")
+    else:
+        mode = " (lecture seule)"
     print(BOLD + "emusf REPL" + RESET + " — org {}{}".format(
-        org.schema_name, " (lecture seule)" if read_only else " (DML + triggers)"))
+        org.schema_name, mode))
     print("Commandes :")
     print("  " + GREEN + "SOQL" + RESET + "  → SELECT Id, Name FROM Account LIMIT 5")
     print("  " + CYAN + "Apex" + RESET + "  → String x = 'hello'; System.debug(x);")
@@ -195,34 +225,56 @@ def main() -> int:
     ap.add_argument("methode", nargs="?", default="run",
                     help="méthode statique à exécuter (défaut: run)")
     ap.add_argument("--org", choices=["test", "data"], default="test",
-                    help="test = bac à sable DML (défaut), data = export réel en lecture seule")
+                    help="test = bac à sable DML (défaut), data = export réel "
+                         "(DML transactionnel, rollback par défaut)")
     ap.add_argument("--entry", default="Main.cls",
                     help="(scénario) fichier point d'entrée (défaut: Main.cls)")
     ap.add_argument("--ast", action="store_true", help="afficher l'AST avant exécution")
+    ap.add_argument("--trace", nargs="?", const="normal", choices=["normal", "verbose"],
+                    help="tracer l'exécution (appels, statements, SOQL, DML) ; "
+                         "'verbose' ajoute chaque expression évaluée")
     ap.add_argument("--no-seed", action="store_true",
                     help="(org test) ne pas créer les données de démo")
     ap.add_argument("--no-triggers", action="store_true",
                     help="(org test) ne pas charger les triggers d'apex/")
+    ap.add_argument("--commit", action="store_true",
+                    help="(org data) committer les écritures à la fin — sinon rollback")
+    ap.add_argument("--triggers", action="store_true",
+                    help="(org data) déclencher les triggers sur les DML")
     args = ap.parse_args()
 
-    # Scénario : répertoire
+    if args.org != "data" and (args.commit or args.triggers):
+        ap.error("--commit et --triggers ne s'appliquent qu'à --org data")
+
+    if args.trace:
+        from emusf.tracer import install as install_trace
+        install_trace(args.trace)
+
+    # Scénario : répertoire (org data injectée ; org test = chemin historique
+    # du scenario_runner, sans seed de démo ni triggers d'apex/)
     if args.cible and os.path.isdir(args.cible):
         from emusf.scenario_runner import load_scenario
-        return 0 if load_scenario(args.cible, args.entry, args.methode) else 1
+        org = make_org("data", data_triggers=args.triggers) if args.org == "data" else None
+        return 0 if load_scenario(args.cible, args.entry, args.methode,
+                                  org=org, commit=args.commit) else 1
 
-    org = make_org(args.org, seed=not args.no_seed, triggers=not args.no_triggers)
+    org = make_org(args.org, seed=not args.no_seed, triggers=not args.no_triggers,
+                   data_triggers=args.triggers)
 
-    # Classe : fichier .cls
-    if args.cible:
-        if not os.path.isfile(args.cible):
-            print(RED + "Erreur: '{}' introuvable".format(args.cible) + RESET)
-            return 1
-        run_class(args.cible, args.methode, org, args.ast)
+    try:
+        # Classe : fichier .cls
+        if args.cible:
+            if not os.path.isfile(args.cible):
+                print(RED + "Erreur: '{}' introuvable".format(args.cible) + RESET)
+                return 1
+            run_class(args.cible, args.methode, org, args.ast)
+            return 0
+
+        # REPL
+        run_repl(org, args.ast)
         return 0
-
-    # REPL
-    run_repl(org, args.ast)
-    return 0
+    finally:
+        finalize_org(org, args.commit)
 
 
 if __name__ == "__main__":

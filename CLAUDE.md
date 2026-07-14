@@ -17,11 +17,13 @@ python3 -m pytest tests/test_emulator.py::test_simple_soql -v
 
 # Unified entry point: REPL, Apex class, or scenario — see python3 run.py --help
 python3 run.py                                  # interactive Apex/SOQL REPL (sandbox org)
-python3 run.py --org data                       # REPL on exported Salesforce data (read-only)
+python3 run.py --org data                       # REPL on exported Salesforce data (DML rolled back at end)
 python3 run.py apex/AccountDemo.cls [method]    # execute a static method (sandbox: DML + triggers)
 python3 run.py apex/AccountPgDemo.cls --org data  # execute against exported data
 python3 run.py scenarios/account_trigger        # run a scenario (classes + triggers + flows)
-# Options: --ast (print AST), --no-seed / --no-triggers (sandbox), --entry (scenario entry file)
+python3 run.py scenarios/data_dml_demo --org data  # scenario against exported data (rollback by default)
+# Options: --ast (print AST), --trace [normal|verbose] (log execution: calls/statements/SOQL/DML), --no-seed / --no-triggers (sandbox), --entry (scenario entry file)
+# Options org data: --commit (persist DML, otherwise rolled back), --triggers (fire DML triggers)
 
 # Run Apex test suite (apex_tests/ directory, includes the Test*Pg.cls DML tests)
 python3 apex_tests/run_tests.py
@@ -36,8 +38,9 @@ python3 apex_tests/run_sf_tests.py
 
 **AST nodes** (`ast_nodes.py`): All dataclass-based. Expressions (StringLiteral, MethodCall, BinaryOp, etc.) and statements (VarDecl, IfElse, ForEach, DmlInsert, etc.).
 
-**Two org implementations**:
+**Three org implementations**:
 - `PgOrg` — read-only org for querying exported Salesforce data
+- `PgDataOrg` — DML on the exported data (schema `data`): all writes accumulate in one transaction rolled back at end of run unless `--commit`; strict schema (missing table/column → `DmlException`, never CREATE/ALTER); values adapted to real column types; IDs generated with the emulator pod `Zz` (no collision with real IDs); triggers opt-in via `--triggers`. A long-lived session holds one open transaction (won't see concurrent external commits).
 - `PgTestOrg` — full test org with DML, auto-ID generation, trigger firing, and transaction isolation via SAVEPOINT/ROLLBACK
 
 **Interpreter** (`interpreter.py`): `_eval(expr)` evaluates expressions, `_exec_stmt(stmt)` executes statements. Control flow uses exceptions (`ReturnException`, `BreakException`, `ContinueException`). SObjects are plain Python dicts. Variables and classes stored in interpreter state.

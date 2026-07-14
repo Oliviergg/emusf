@@ -48,8 +48,14 @@ def load_sf_classes(prefixes):
     return classes
 
 
-def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
-    """Charge et exécute un scénario Apex depuis un répertoire."""
+def load_scenario(scenario_dir, entry_file="Main.cls", method="run",
+                  org=None, commit=False):
+    """Charge et exécute un scénario Apex depuis un répertoire.
+
+    org : org préconstruite (PgDataOrg pour tourner sur l'export réel) ;
+          None = bac à sable PgTestOrg schéma test (chemin historique).
+    commit : (org data) committer les écritures à la fin — sinon rollback.
+    """
 
     if not os.path.isdir(scenario_dir):
         print("{}Erreur: répertoire '{}' introuvable{}".format(RED, scenario_dir, RESET))
@@ -102,8 +108,12 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
             sys.exit(1)
 
     # --- 2. Créer l'org PG ---
-    org = PgTestOrg(DSN, schema="test")
-    org.truncate_all()
+    from emusf.pg_data_org import PgDataOrg
+    is_data = isinstance(org, PgDataOrg)
+    if org is None:
+        org = PgTestOrg(DSN, schema="test")
+    if not is_data:
+        org.truncate_all()
 
     # Charger les métadonnées SFDX si disponibles
     if os.path.isdir(SFDX_OBJECTS):
@@ -115,7 +125,9 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
 
     # --- 2b. Seed data depuis le schema data ---
     seed_path = os.path.join(scenario_dir, ".seed_tables")
-    if os.path.exists(seed_path):
+    if is_data and os.path.exists(seed_path):
+        print("  {}SEED{} ignoré (org data = données réelles)".format(DIM, RESET))
+    if not is_data and os.path.exists(seed_path):
         with open(seed_path) as f:
             tables = [line.strip() for line in f if line.strip()]
         cur = org.conn.cursor()
@@ -155,8 +167,10 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
         cur.close()
 
     # --- 3. Charger les triggers (.trigger) avec accès aux classes ---
-    for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.trigger"), recursive=True)):
-        load_trigger(org, path, classes=classes)
+    # Sur l'org data, les triggers DML sont opt-in (--triggers)
+    if not is_data or org.triggers_enabled:
+        for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.trigger"), recursive=True)):
+            load_trigger(org, path, classes=classes)
 
     # --- 3b. Charger les flows (.flow-meta.xml) ---
     for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.flow-meta.xml"), recursive=True)):
@@ -255,8 +269,9 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
     try:
         interp._invoke_method(entry_class, method_def, [])
     except Exception as e:
+        from emusf.interpreter import format_error
         interp.assertions_failed += 1
-        interp.failures.append("Runtime error: {}".format(e))
+        interp.failures.append("Runtime error: {}".format(format_error(e)))
 
     # --- 6. Résultat ---
     print()
@@ -276,7 +291,19 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
                 print("  {} {}{}".format(RED, f, RESET))
 
     # Cleanup
-    org.truncate_all()
+    if is_data:
+        n = org.pending_dml
+        if commit:
+            org.commit()
+            if n:
+                print("\n{}{}{} écritures DML — COMMIT{}".format(GREEN, BOLD, n, RESET))
+        else:
+            org.rollback_all()
+            if n:
+                print("\n{}{} écritures DML annulées (rollback par défaut — "
+                      "--commit pour persister){}".format(DIM, n, RESET))
+    else:
+        org.truncate_all()
     org.conn.close()
 
     return failed == 0

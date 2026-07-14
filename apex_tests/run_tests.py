@@ -76,8 +76,9 @@ for path in files:
     try:
         interp._exec_block(ast)
     except Exception as e:
+        from emusf.interpreter import format_error
         interp.assertions_failed += 1
-        interp.failures.append("Runtime error: {}".format(e))
+        interp.failures.append("Runtime error: {}".format(format_error(e)))
 
     passed = interp.assertions_passed
     failed = interp.assertions_failed

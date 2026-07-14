@@ -289,13 +289,24 @@ class _Builder:
         return stmts
 
     def stmt(self, ctx) -> list:
-        """Mappe un statement ; retourne une liste (0, 1 ou n nœuds)."""
+        """Mappe un statement ; retourne une liste (0, 1 ou n nœuds).
+
+        Estampille chaque nœud avec sa ligne source (attribut dynamique .line)
+        pour permettre à l'interpréteur de situer les erreurs dans le .cls."""
         try:
-            return self._stmt(ctx)
+            nodes = self._stmt(ctx)
         except _Unsupported as exc:
             self.warnings.append("statement ignoré ({}) : {}".format(
                 exc, _src(ctx)[:60]))
             return []
+        line = ctx.start.line
+        for node in nodes:
+            if getattr(node, "line", None) is None:
+                try:
+                    node.line = line
+                except (AttributeError, TypeError):
+                    pass  # nœud à slots ou immuable — on ignore
+        return nodes
 
     def _stmt(self, ctx) -> list:
         AP = self.AP

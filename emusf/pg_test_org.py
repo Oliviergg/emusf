@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Callable
+from typing import Optional
 
 from .pg_org import PgOrg, sf_to_pg_column
 from .dml import DmlResult, SOBJECT_PREFIX, DEFAULT_POD, DEFAULT_START_COUNTER, generate_sf_id
 from .schema import RelationshipMeta
+from .triggers_registry import TriggerMixin
 
 # Mapping types alternatifs → PostgreSQL pour create_sobject()
 _TYPE_MAP = {
@@ -15,7 +16,7 @@ _TYPE_MAP = {
 }
 
 
-class PgTestOrg(PgOrg):
+class PgTestOrg(TriggerMixin, PgOrg):
     """
     Org de test : INSERT/UPDATE/DELETE contre un schema PG dédié.
     Supporte les triggers before/after, création dynamique de tables.
@@ -383,20 +384,7 @@ class PgTestOrg(PgOrg):
         self._fire_triggers("after_delete", sobject, [{"Id": rid} for rid in record_ids])
         return DmlResult(success=True, record_ids=record_ids)
 
-    # --- Triggers ---
-
-    def add_trigger(self, event: str, sobject: str, callback: Callable):
-        if event not in self._triggers:
-            self._triggers[event] = {}
-        if sobject not in self._triggers[event]:
-            self._triggers[event][sobject] = []
-        self._triggers[event][sobject].append(callback)
-
-    def _fire_triggers(self, event: str, sobject: str, records: list,
-                       old_records: list = None):
-        callbacks = self._triggers.get(event, {}).get(sobject, [])
-        for cb in callbacks:
-            cb(records, old_records=old_records)
+    # --- Triggers : add_trigger/_fire_triggers hérités de TriggerMixin ---
 
     def _generate_id(self, sobject: str) -> str:
         prefix = SOBJECT_PREFIX.get(sobject, "0XX")

@@ -28,6 +28,19 @@ class ApexException(Exception):
     pass
 
 
+def format_error(exc) -> str:
+    """Message d'erreur runtime préfixé de sa localisation Apex si connue :
+    'XPLPrepareService:73 — <message>'. L'interpréteur attache _emusf_location
+    (nom de classe, ligne) à l'exception au plus près du statement fautif."""
+    loc = getattr(exc, "_emusf_location", None)
+    if loc:
+        cls, line = loc
+        where = "{}:{}".format(cls, line) if cls else "ligne {}".format(line)
+        if line is not None:
+            return "{} — {}".format(where, exc)
+    return str(exc)
+
+
 class BreakException(Exception):
     pass
 
@@ -129,6 +142,7 @@ class ApexInterpreter:
         self.classes = {}  # {class_name: ClassDef}
         self._current_class = None  # ClassDef en cours d'exécution
         self._current_return_type = None  # type de retour de la méthode en cours
+        self._current_line = None  # ligne source du statement en cours d'exécution
         self._current_instance = None  # Instance en cours (pour this)
         self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
         self._http_mock = None  # Instance HttpCalloutMock pour Test.setMock
@@ -265,6 +279,22 @@ class ApexInterpreter:
             pass  # return au top level = fin d'exécution
 
     def _exec_stmt(self, stmt: Stmt):
+        # Suivi de la ligne source courante + localisation des erreurs runtime
+        if getattr(stmt, "line", None) is not None:
+            self._current_line = stmt.line
+        try:
+            self._exec_stmt_body(stmt)
+        except (ReturnException, BreakException, ContinueException):
+            raise
+        except Exception as e:
+            # Attacher la localisation au plus près de l'erreur (la première
+            # frame qui l'attrape porte la bonne ligne/classe) ; ne pas écraser
+            if not getattr(e, "_emusf_location", None):
+                cls = self._current_class.name if self._current_class else None
+                e._emusf_location = (cls, self._current_line)
+            raise
+
+    def _exec_stmt_body(self, stmt: Stmt):
         if isinstance(stmt, VarDecl):
             self.variables[stmt.var_name] = self._eval(stmt.value)
 
@@ -1600,24 +1630,30 @@ class ApexInterpreter:
         if call.obj.endswith("__c") and method == "getInstance":
             sobject = call.obj
             name = args[0] if args else "default"
+            import contextlib
+            import psycopg2.extras
+            # Sur PgDataOrg, le savepoint protège les écritures DML en attente ;
+            # sinon rollback complet (sans récupération la transaction resterait
+            # 'aborted' et toutes les requêtes suivantes échoueraient)
+            savepoint = getattr(self.org, "_savepoint", None)
             try:
-                import psycopg2.extras
-                cur = self.org.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-                cur.execute(
-                    "SELECT * FROM {}.{} WHERE name = %s LIMIT 1".format(
-                        self.org.schema_name, sobject.lower()),
-                    [name],
-                )
-                row = cur.fetchone()
-                cur.close()
+                with savepoint() if savepoint else contextlib.nullcontext():
+                    cur = self.org.conn.cursor(
+                        cursor_factory=psycopg2.extras.RealDictCursor)
+                    cur.execute(
+                        "SELECT * FROM {}.{} WHERE name = %s LIMIT 1".format(
+                            self.org.schema_name, sobject.lower()),
+                        [name],
+                    )
+                    row = cur.fetchone()
+                    cur.close()
                 if row:
                     result = {"_sobject_type": sobject}
                     result.update(row)
                     return result
             except Exception:
-                # Rollback obligatoire : sans lui la transaction resterait
-                # 'aborted' et toutes les requêtes suivantes échoueraient
-                self.org.conn.rollback()
+                if not savepoint:
+                    self.org.conn.rollback()
             return {"_sobject_type": sobject}
 
         raise Exception("Méthode inconnue: {}.{}()".format(call.obj, method))

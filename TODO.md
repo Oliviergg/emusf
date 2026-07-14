@@ -14,6 +14,10 @@ TODO
 -- completer la librairie.
 -- logger les appels de triggers
 -- mettre les flow dans les scénarios
+-- org data DML : sémantique partial-success de Database.insert/update (allOrNone=false) sur PgDataOrg
+-- org data DML : commande REPL /commit pour committer en cours de session
+-- org data DML : config des relations SFDX au-delà de Account/Contact (make_org ne charge que ces deux-là)
+-- DML sur SOQL inline : 'delete [SELECT ...]' échoue ('str' object has no attribute 'get') — sur toutes les orgs
 
 DONE
 -- soql merite son propre lexer et resolver
