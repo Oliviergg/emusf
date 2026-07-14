@@ -28,6 +28,11 @@ class TriggerParser:
         Parse: trigger Name on SObject (event1, event2) { body }
         Retourne (name, sobject, events, body_stmts)
         """
+        import os
+        if os.environ.get("EMUSF_FRONTEND") == "antlr":
+            from . import antlr_frontend
+            return antlr_frontend.parse_trigger(source)
+
         header_match = re.match(
             r'trigger\s+(\w+)\s+on\s+(\w+)\s*\((.+?)\)\s*\{',
             source, re.DOTALL

@@ -1,7 +1,12 @@
-"""Parser Apex → AST. Transforme du code source Apex en arbre de nœuds."""
+"""Parser Apex → AST. Transforme du code source Apex en arbre de nœuds.
+
+EMUSF_FRONTEND=antlr bascule sur le frontend ANTLR (antlr_frontend.py),
+qui produit les mêmes ast_nodes via la grammaire apex-dev-tools/apex-parser.
+"""
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional
 
@@ -33,6 +38,10 @@ class ApexParser:
 
     def parse_full_class(self, source: str) -> ClassDef:
         """Parse une classe Apex complète : constantes, méthodes, etc."""
+        if os.environ.get("EMUSF_FRONTEND") == "antlr":
+            from . import antlr_frontend
+            return antlr_frontend.parse_full_class(source)
+
         # Extraire le nom et le body de la classe
         class_match = re.search(
             r'(?:public|private|global)\s+'
@@ -178,13 +187,15 @@ class ApexParser:
 
         method_positions = []
         for m in method_pattern.finditer(body):
-            # Skip if inside an inner class
-            in_inner = False
-            for istart, iend in inner_positions:
+            # Skip if inside an inner class or a previously found method body
+            # (sinon un `else if (...) {` dans un corps de méthode est pris
+            # pour une déclaration de méthode)
+            in_member = False
+            for istart, iend in inner_positions + method_positions:
                 if istart <= m.start() <= iend:
-                    in_inner = True
+                    in_member = True
                     break
-            if in_inner:
+            if in_member:
                 continue
 
             return_type = m.group(1)
@@ -443,7 +454,10 @@ class ApexParser:
                     depth += 1
                 elif char == "}":
                     depth -= 1
-                    if depth == 0:
+                    # Ne clôt un statement-bloc que hors parenthèses : un '}'
+                    # dans un appel (ex: f(new List<X>{ a })) n'est pas une
+                    # fin de bloc
+                    if depth == 0 and paren_depth == 0:
                         rest = block[i + 1:].lstrip()
                         if rest.startswith("else") or rest.startswith("catch"):
                             pass
@@ -464,8 +478,9 @@ class ApexParser:
     def _parse_statement(self, stmt: str) -> Optional[Stmt]:
         """Parse un statement brut en nœud AST."""
         # Normaliser les newlines en espaces pour les statements simples (sans blocs)
-        # sauf pour ceux qui contiennent des blocs { }
-        if "\n" in stmt and "{" not in stmt:
+        # sauf pour ceux qui contiennent des blocs { } — les accolades à
+        # l'intérieur de strings ne comptent pas comme blocs
+        if "\n" in stmt and not self._has_brace_outside_string(stmt):
             stmt = " ".join(stmt.split())
 
         # --- for (...) { body } ---
@@ -704,6 +719,27 @@ class ApexParser:
             )
 
         return None
+
+    @staticmethod
+    def _has_brace_outside_string(s: str) -> bool:
+        """True si un '{' apparaît hors d'une string literal."""
+        in_string = False
+        i = 0
+        while i < len(s):
+            ch = s[i]
+            if in_string:
+                if ch == "\\" and i + 1 < len(s):
+                    i += 2
+                    continue
+                if ch == "'":
+                    in_string = False
+            else:
+                if ch == "'":
+                    in_string = True
+                elif ch == "{":
+                    return True
+            i += 1
+        return False
 
     def _parse_method_params(self, params_str: str) -> list:
         """Parse method parameters, respecting <> in generic types."""

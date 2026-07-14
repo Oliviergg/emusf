@@ -4,3 +4,4 @@ __pycache__/
 .sfdx/
 node_modules/
 static/slds/
+.venv/
