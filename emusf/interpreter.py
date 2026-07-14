@@ -94,6 +94,29 @@ def _json_clean(value):
     return value
 
 
+def _apex_str(value) -> str:
+    """String.valueOf(value) façon Apex.
+
+    Pour une instance de classe, Salesforce renvoie 'NomClasse:[champ=val, ...]'
+    (le préfixe 'NomClasse:' est utilisé par des frameworks comme QueueableJob
+    via String.valueOf(this).split(':')[0] pour retrouver le type)."""
+    if isinstance(value, dict):
+        cls = value.get("_class")
+        name = value.get("_type")
+        if cls is not None and name:
+            fields = {k: v for k, v in value.items() if not k.startswith("_")}
+            body = ", ".join("{}={}".format(k, _apex_str(v)) for k, v in fields.items())
+            return "{}:[{}]".format(name, body)
+        if value.get("_type") == "Blob":
+            data = value.get("_data", b"")
+            return data.decode("utf-8", "replace") if isinstance(data, bytes) else str(data)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
 def _field_of(record, field):
     """Accès champ insensible à la casse sur un SObject (dict)."""
     if not isinstance(record, dict):
@@ -1143,7 +1166,7 @@ class ApexInterpreter:
                 v = args[0] if args else None
                 return v is not None and isinstance(v, str) and v.strip() != ""
             elif method == "valueOf":
-                return str(args[0]) if args else ""
+                return _apex_str(args[0]) if args else ""
             elif method == "isEmpty":
                 v = args[0] if args else None
                 return v is None or (isinstance(v, str) and v == "")
@@ -1463,7 +1486,7 @@ class ApexInterpreter:
             if method == "escapeSingleQuotes":
                 return args[0].replace("'", "\\'") if args and isinstance(args[0], str) else (args[0] if args else "")
             if method == "valueOf":
-                return str(args[0]) if args else ""
+                return _apex_str(args[0]) if args else ""
             if method == "isBlank":
                 return args[0] is None or (isinstance(args[0], str) and args[0].strip() == "") if args else True
             if method == "isNotBlank":

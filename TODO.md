@@ -4,6 +4,10 @@ TODO
    apex_parser.py/trigger_parser.py sont des façades ; parser maison (lexer/token_parser) supprimé.
 -- limitations connues du builder ANTLR (constructions ignorées faute de support interpréteur, voir
    docstring emusf/antlr/builder.py) : décls sans init, upsert/merge/runAs, 2e catch/finally, enums…
+-- framework de jobs BTP async : System.enqueueJob->execute->process marche (voir scenarios/queueable_accounts),
+   mais QueueManager.enqueueJob complet (Platform Events -> JobEventTrigger -> processNextJob -> CheckQueueJob polling)
+   ne s'exécute pas proprement en synchrone (System.enqueueJob imbriqué dans processNextJob n'atteint pas le handler ;
+   chemin immediate perd Job_Id ; borné par async_budget). Contournement : createQueueJob + System.enqueueJob direct.
 -- harnais de test différentiel contre une scratch org (exécuter le même Apex sur EMUSF et une vraie org, comparer résultats/exceptions/limits)
 -- continuer les test
 -- logguer les requetes soql
