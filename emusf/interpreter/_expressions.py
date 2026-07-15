@@ -55,11 +55,31 @@ class ExpressionsMixin:
                     ikey = _ci_key(self._current_instance, expr.name)
                     if ikey is not None and ikey not in ("_type", "_class", "_chain"):
                         return self._current_instance[ikey]
-                # Fallback: statique d'une classe visible (X.varName)
+                # Fallback: statique de la classe courante, sinon d'une
+                # classe visible si le nom est non ambigu (une seule classe)
                 nl = expr.name.lower()
-                for k in self.variables:
-                    if "." in k and k.split(".", 1)[1].lower() == nl:
-                        return self.variables[k]
+                if self._current_class is not None:
+                    ck = _ci_key(self.variables,
+                                 "{}.{}".format(self._current_class.name, expr.name))
+                    if ck is not None:
+                        return self.variables[ck]
+                matches = [k for k in self.variables
+                           if "." in k and k.split(".", 1)[1].lower() == nl]
+                if len(matches) == 1:
+                    return self.variables[matches[0]]
+                # Constante de la classe courante non préchargée : évaluer
+                if self._current_class is not None:
+                    ck2 = _ci_key(self._current_class.constants, expr.name)
+                    if ck2 is not None:
+                        const = self._current_class.constants[ck2]
+                        if const[1] is not None:
+                            try:
+                                value = self._eval(const[1])
+                            except Exception:
+                                value = None
+                            self.variables["{}.{}".format(
+                                self._current_class.name, ck2)] = value
+                            return value
             return val
 
         elif isinstance(expr, FieldAccess):
@@ -436,6 +456,18 @@ class ExpressionsMixin:
                 return str(val)
             elif expr.target_type == "Boolean":
                 return bool(val)
+            elif expr.target_type.lower() in ("datetime", "date", "time"):
+                # Cast strict vers un type temporel : TypeException si la valeur
+                # est un objet (pattern TestHelper.getUnknownObjectType : le
+                # message porte le type runtime)
+                import datetime as _dt
+                if isinstance(val, dict) and val.get("_type") not in ("Date", "DateTime", "Time"):
+                    runtime_type = (val.get("_type") or val.get("_sobject_type")
+                                    or "Object")
+                    raise ApexException(
+                        "Invalid conversion from runtime type {} to {}".format(
+                            runtime_type, expr.target_type.capitalize()))
+                return val
             return val  # passthrough pour les types inconnus
 
         elif isinstance(expr, MethodCall):

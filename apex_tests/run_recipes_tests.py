@@ -214,6 +214,14 @@ def run_test_class(test_class_name, test_source, all_classes, parser, org):
         interp._current_class = test_class_def
         for ic_name, ic_def in test_class_def.inner_classes.items():
             interp.classes[ic_name] = ic_def
+        for cname, (ctype, expr) in test_class_def.constants.items():
+            if cname in test_class_def.instance_fields:
+                continue
+            try:
+                interp.variables["{}.{}".format(test_class_def.name, cname)] = (
+                    interp._eval(expr) if expr is not None else None)
+            except Exception:
+                pass
 
         signal.signal(signal.SIGALRM, _alarm_handler)
         signal.alarm(METHOD_TIMEOUT)

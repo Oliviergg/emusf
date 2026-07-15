@@ -74,6 +74,12 @@ class StatementsMixin:
                     stmt.value.value, stmt.type_name)
             else:
                 self.variables[stmt.var_name] = self._eval(stmt.value)
+            # Le builder produit des VarDecl pour `x = new List<…>()` (parité) :
+            # synchroniser la statique si x est un champ statique de la classe
+            if self._current_class and stmt.var_name in self._current_class.constants:
+                self.variables["{}.{}".format(
+                    self._current_class.name, stmt.var_name)] = \
+                    self.variables[stmt.var_name]
 
         elif isinstance(stmt, Assign):
             if isinstance(stmt.value, StringLiteral) and \
@@ -85,14 +91,28 @@ class StatementsMixin:
             var_name = stmt.var_name
             if var_name not in self.variables:
                 resolved = _ci_key(self.variables, var_name)
-                if resolved is None:
-                    # Statique d'une classe visible (ex : inner class écrivant
-                    # une statique de la classe englobante) : X.varName
+                # Les champs d'instance priment sur les fallbacks statiques
+                is_instance_field = (
+                    self._current_instance is not None
+                    and _ci_key(self._current_instance, var_name) is not None)
+                if resolved is None and not is_instance_field:
+                    # Statique de la classe courante, sinon d'une classe
+                    # visible si non ambigu (inner class → englobante)
                     vl = var_name.lower()
-                    for k in self.variables:
-                        if "." in k and k.split(".", 1)[1].lower() == vl:
-                            self.variables[k] = val
+                    if self._current_class is not None:
+                        ck = _ci_key(self.variables,
+                                     "{}.{}".format(self._current_class.name, var_name))
+                        if ck is not None:
+                            self.variables[ck] = val
+                            # nom court aussi : les statiques de la classe
+                            # courante sont adressables non qualifiées
+                            self.variables[var_name] = val
                             return
+                    matches = [k for k in self.variables
+                               if "." in k and k.split(".", 1)[1].lower() == vl]
+                    if len(matches) == 1:
+                        self.variables[matches[0]] = val
+                        return
                 var_name = resolved or var_name
             self.variables[var_name] = val
             # Synchroniser la variable statique si elle existe (ClassName.field)

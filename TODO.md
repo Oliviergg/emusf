@@ -77,7 +77,18 @@ baseline honnête après P3 = 55/297 (18%) ; après la passe P1-P10 du 2026-07-1
    l'ignorait) ; System.debug(LoggingLevel, msg) affiche le message ; Database.* devine le type
    des records sans marqueur.
 
-Reste à faire (état au run 182/313) :
+[FAIT 2026-07-15 soir] P-G reliquat trigger-framework (192/313 = 61%, MetadataTriggerHandler 7/8,
+   TriggerHandler_Test 12/13) : statiques adressables par nom court dans les appels de méthode et
+   les affectations (avec priorité aux champs d'instance — une inversion a causé une régression
+   182→132, corrigée) ; VarDecl synchronise la statique (le builder produit des VarDecl pour
+   `x = new List<…>()`) ; constantes de la classe de test préchargées par le runner + fallback
+   d'évaluation paresseuse ; cast (DateTime) obj lève TypeException avec le type runtime dans le
+   message (pattern TestHelper.getUnknownObjectType) ; ALTER TABLE d'auto-extension en autocommit
+   (un rollback de validation DML annulait le DDL déjà mémorisé dans _tables → colonnes fantômes,
+   c'était LA contamination inter-classes du run complet).
+   Piège repro : repro_one.py jette le stdout des tests (DiscardIO) — déboguer via stderr.
+
+Reste à faire (état au run 192/313) :
 
 P-G — reliquat trigger-framework : bypass API (Set statique contains), maxLoopCount (exception au
    dépassement), message d'exception user au getMessage(), MetadataTriggerHandler activeHandler

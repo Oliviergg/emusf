@@ -37,6 +37,16 @@ class BuiltinsMixin:
             vkey = _ci_key(self.variables, call.obj)
             if vkey is not None:
                 obj = self.variables[vkey]
+            elif self._current_instance is not None and \
+                    _ci_key(self._current_instance, call.obj) is not None:
+                # Champ d'instance implicite (sans this.) — prime sur la statique
+                obj = self._current_instance[_ci_key(self._current_instance, call.obj)]
+            elif self._current_class is not None:
+                # Statique de la classe courante adressée par son nom court
+                ck = _ci_key(self.variables,
+                             "{}.{}".format(self._current_class.name, call.obj))
+                if ck is not None:
+                    obj = self.variables[ck]
         # Normaliser la casse d'un namespace built-in (sauf si masqué par une
         # variable locale ou une classe utilisateur du même nom)
         if (obj is None and call.obj not in self.classes

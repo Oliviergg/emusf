@@ -299,11 +299,19 @@ class PgTestOrg(TriggerMixin, PgOrg):
                     known.add(col)
         if not new_cols:
             return
-        cur = self.conn.cursor()
-        for col in new_cols:
-            cur.execute("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT".format(
-                self.schema_name, table, col))
-        cur.close()
+        # DDL en autocommit : un rollback ultérieur (validation DML, trigger en
+        # échec) ne doit pas annuler l'ALTER alors que _tables le mémorise
+        old_autocommit = self.conn.autocommit
+        try:
+            self.conn.rollback()
+            self.conn.autocommit = True
+            cur = self.conn.cursor()
+            for col in new_cols:
+                cur.execute("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT".format(
+                    self.schema_name, table, col))
+            cur.close()
+        finally:
+            self.conn.autocommit = old_autocommit
         self._tables[table].extend(new_cols)
 
     # Champs requis des objets standard — la validation ne s'applique que si
