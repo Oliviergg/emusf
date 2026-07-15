@@ -186,6 +186,14 @@ class _Builder:
                 self.warnings.append("membre ignoré : {}".format(
                     _src(member)[:60]))
 
+        # Tagger chaque méthode avec sa classe propriétaire (pour localiser les
+        # erreurs dans le bon fichier lors des appels de méthodes héritées)
+        for md in list(methods.values()) + constructors:
+            md.owner_class = name
+        for ov_list in overloads.values():
+            for md in ov_list:
+                md.owner_class = name
+
         return ClassDef(
             name=name,
             constants=constants,

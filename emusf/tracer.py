@@ -54,7 +54,8 @@ def install(level: str = "normal"):
         kind = type(stmt).__name__
         if kind not in ("Block",):  # Block n'est qu'un conteneur
             line = getattr(stmt, "line", None)
-            cls = self._current_class.name if self._current_class else "?"
+            cls = self._current_method_class or (
+                self._current_class.name if self._current_class else "?")
             loc = "{}{}:{}{} ".format(DIM, cls, line, RESET) if line else ""
             print("{}{}{}▸{} {}".format(_pad(), loc, CYAN, RESET, kind))
         return orig["exec"](self, stmt)

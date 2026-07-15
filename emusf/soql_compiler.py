@@ -113,11 +113,24 @@ class SoqlCompiler:
                         select_parts.append("{}.{} AS {}".format(alias_tbl, pg_col, pg_alias))
                         field_aliases[pg_alias] = sf_name
                         sf_fields.append(sf_name)
+                    elif "." in f.name:
+                        # Champ parent non résolu (relation standard sans schema,
+                        # ex: CreatedBy.Id). En Salesforce <Rel>.Id == <Rel>Id
+                        # (la colonne FK), donc on mappe CreatedBy.Id -> createdbyid.
+                        # Les autres champs parents (.Name…) sans jointure possible
+                        # -> NULL, plutôt qu'une colonne inexistante qui planterait.
+                        rel_ref, sub = f.name.split(".", 1)
+                        pg_alias = f.name.lower().replace(".", "__")
+                        if sub.lower() == "id":
+                            fk_col = (rel_ref + "Id").lower()
+                            col = "{}.{}".format(main_alias, fk_col) if use_joins else fk_col
+                            select_parts.append("{} AS {}".format(col, pg_alias))
+                        else:
+                            select_parts.append("NULL AS {}".format(pg_alias))
+                        field_aliases[pg_alias] = f.name
+                        sf_fields.append(f.name)
                     else:
                         pg_col = f.name.lower()
-                        # Ignorer les champs relationnels non résolus (pas de schema)
-                        if "." in pg_col:
-                            pg_col = pg_col.replace(".", "__")
                         if use_joins:
                             select_parts.append("{}.{}".format(main_alias, pg_col))
                         else:

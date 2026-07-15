@@ -39,6 +39,7 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         self._current_class = None  # ClassDef en cours d'exécution
         self._current_return_type = None  # type de retour de la méthode en cours
         self._current_line = None  # ligne source du statement en cours d'exécution
+        self._current_method_class = None  # classe qui définit la méthode courante
         self._current_instance = None  # Instance en cours (pour this)
         self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
         self._http_mock = None  # Instance HttpCalloutMock pour Test.setMock

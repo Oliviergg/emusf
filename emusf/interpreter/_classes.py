@@ -258,10 +258,12 @@ class ClassesMixin:
         saved_class = self._current_class
         saved_vars = self.variables.copy()
         saved_rt = self._current_return_type
+        saved_mc = self._current_method_class
 
         self._current_instance = instance
         self._current_class = class_def
         self._current_return_type = getattr(method_def, "return_type", None)
+        self._current_method_class = getattr(method_def, "owner_class", None)
 
         new_scope = {}
         for k, v in saved_vars.items():
@@ -292,6 +294,7 @@ class ClassesMixin:
         self._current_instance = saved_instance
         self._current_class = saved_class
         self._current_return_type = saved_rt
+        self._current_method_class = saved_mc
         return result
 
     def _invoke_method(self, class_def, method_def, args):
@@ -299,8 +302,10 @@ class ClassesMixin:
         saved_class = self._current_class
         saved_vars = self.variables.copy()
         saved_rt = self._current_return_type
+        saved_mc = self._current_method_class
         self._current_class = class_def
         self._current_return_type = getattr(method_def, "return_type", None)
+        self._current_method_class = getattr(method_def, "owner_class", None)
 
         # Nouveau scope : on garde les constantes de classe et les classes
         new_scope = {}
@@ -344,4 +349,5 @@ class ClassesMixin:
         self.variables = saved_vars
         self._current_class = saved_class
         self._current_return_type = saved_rt
+        self._current_method_class = saved_mc
         return result

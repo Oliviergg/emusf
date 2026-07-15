@@ -40,7 +40,10 @@ class StatementsMixin:
             # Attacher la localisation au plus près de l'erreur (la première
             # frame qui l'attrape porte la bonne ligne/classe) ; ne pas écraser
             if not getattr(e, "_emusf_location", None):
-                cls = self._current_class.name if self._current_class else None
+                # Classe qui DÉFINIT la méthode courante (pas la classe concrète
+                # de l'instance) — la ligne vient de ce fichier-là
+                cls = self._current_method_class or (
+                    self._current_class.name if self._current_class else None)
                 e._emusf_location = (cls, self._current_line)
             raise
 
