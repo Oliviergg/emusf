@@ -16,7 +16,7 @@ from ..ast_nodes import (
 from ._helpers import (
     ReturnException, ApexException, BreakException, ContinueException,
     format_error, _common_prefix_len, _common_prefix, _unescape_html,
-    _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes,
+    _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes, _ci_key, ApexToken,
 )
 
 
@@ -38,10 +38,16 @@ class ExpressionsMixin:
             if expr.name == "this":
                 return self._current_instance
             val = self.variables.get(expr.name)
-            # Fallback: champ d'instance implicite (sans this.)
-            if val is None and expr.name not in self.variables and self._current_instance is not None:
-                if expr.name in self._current_instance and expr.name not in ("_type", "_class", "_chain"):
-                    return self._current_instance[expr.name]
+            if val is None and expr.name not in self.variables:
+                # Fallback insensible à la casse (Apex l'est)
+                key = _ci_key(self.variables, expr.name)
+                if key is not None:
+                    return self.variables[key]
+                # Fallback: champ d'instance implicite (sans this.)
+                if self._current_instance is not None:
+                    ikey = _ci_key(self._current_instance, expr.name)
+                    if ikey is not None and ikey not in ("_type", "_class", "_chain"):
+                        return self._current_instance[ikey]
             return val
 
         elif isinstance(expr, FieldAccess):
@@ -56,6 +62,16 @@ class ExpressionsMixin:
             # Schema.sObjectType → map des describes (Schema.sObjectType.X.isAccessible())
             if expr.obj == "Schema" and expr.field == "sObjectType":
                 return {"_type": "SchemaSObjectTypeMap"}
+
+            # SObjectType.Account → token SObjectType (getDescribe(), newSObject())
+            if expr.obj == "SObjectType" and expr.obj not in self.variables:
+                return ApexToken({"_type": "SObjectType", "name": expr.field})
+
+            # Account.sObjectType → même token (l'objet n'est pas une variable)
+            if (expr.field.lower() == "sobjecttype"
+                    and expr.obj not in self.variables
+                    and expr.obj[:1].isupper()):
+                return ApexToken({"_type": "SObjectType", "name": expr.obj})
             # ParentJobResult.SUCCESS / FAILURE
             if expr.obj == "ParentJobResult":
                 return expr.field
@@ -84,6 +100,15 @@ class ExpressionsMixin:
             if class_key in self.variables:
                 return self.variables[class_key]
             obj = self.variables.get(expr.obj)
+            if obj is None and expr.obj not in self.variables:
+                # Fallbacks insensibles à la casse, hors chemin chaud
+                vkey = _ci_key(self.variables, expr.obj)
+                if vkey is not None:
+                    obj = self.variables[vkey]
+                else:
+                    ck = _ci_key(self.variables, class_key)
+                    if ck is not None:
+                        return self.variables[ck]
             if isinstance(obj, dict):
                 val = obj.get(expr.field)
                 if val is None and expr.field not in obj:
@@ -95,6 +120,19 @@ class ExpressionsMixin:
                 return val
             if isinstance(obj, list):
                 return None
+            # Constante d'une classe/enum chargée mais non préchargée en
+            # variables (enums inner : TriggerContext.BEFORE_INSERT, …)
+            cls = self._resolve_class(expr.obj)
+            if cls is not None:
+                const = cls.constants.get(expr.field)
+                if const is None:
+                    k = _ci_key(cls.constants, expr.field)
+                    const = cls.constants[k] if k is not None else None
+                if const is not None and const[1] is not None:
+                    try:
+                        return self._eval(const[1])
+                    except Exception:
+                        return None
             return None
 
         elif isinstance(expr, UnaryOp):
@@ -263,18 +301,28 @@ class ExpressionsMixin:
             target = self._eval(expr.target)
             args = [self._eval(a) for a in expr.args]
 
-            # System.JSON.method() — résoudre comme JSON.method()
+            # System.X.method() — résoudre comme X.method() pour tout namespace
+            # builtin qualifié par System (System.Assert, System.JSON, System.Test…)
             if target is None and isinstance(expr.target, FieldAccess):
                 fa = expr.target
-                if fa.obj == "System" and fa.field == "JSON":
-                    call = MethodCall(obj="JSON", method=expr.method, args=expr.args)
-                    return self._exec_method_call(call)
+                if isinstance(fa.obj, str) and fa.obj.lower() == "system":
+                    ns = self._BUILTIN_NAMESPACES.get(fa.field.lower())
+                    if ns is not None:
+                        call = MethodCall(obj=ns, method=expr.method, args=expr.args)
+                        return self._exec_method_call(call)
+
+            # Stub (Test.createStub) : dérouter vers le StubProvider
+            if isinstance(target, dict) and "_stub_provider" in target:
+                return self._invoke_stub(target, expr.method, args)
 
             # Instance method call
             if isinstance(target, dict) and "_class" in target:
                 cls = target["_class"]
-                if expr.method in cls.methods:
-                    return self._invoke_instance_method(target, cls.methods[expr.method], args)
+                resolved = self._resolve_method_in_chain(cls, expr.method, args)
+                if resolved is not None:
+                    if resolved.is_static:
+                        return self._invoke_method(cls, resolved, args)
+                    return self._invoke_instance_method(target, resolved, args)
                 # Field access on instance
                 if expr.method in target:
                     return target[expr.method]
@@ -349,7 +397,11 @@ class ExpressionsMixin:
             arr = self._eval(expr.array)
             idx = self._eval(expr.index)
             if isinstance(arr, list) and isinstance(idx, (int, float)):
-                return arr[int(idx)]
+                i = int(idx)
+                if i < 0 or i >= len(arr):
+                    raise ApexException(
+                        "List index out of bounds: {}".format(i))
+                return arr[i]
             if isinstance(arr, dict):
                 return arr.get(idx)
             return None
@@ -385,5 +437,8 @@ class ExpressionsMixin:
             "EncodingUtil", "Crypto", "Blob", "Database", "Schema", "URL",
             "UserInfo", "Http", "Limits", "EventBus", "Type", "UUID",
             "ApexPages", "Messaging",
+            "String", "Integer", "Pattern", "Formula", "FormulaEval",
+            "Assert", "Decimal", "Double", "Id", "SObjectType",
+            "Matcher", "HttpRequest", "HttpResponse",
         )
     }

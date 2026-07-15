@@ -38,3 +38,6 @@ SFDX_OBJECTS = _get("EMUSF_SFDX_OBJECTS",
                     "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/objects")
 SF_CLASSES = _get("EMUSF_SF_CLASSES",
                   "/Users/olivier/Dev/btp/sf-btp/force-app/main/default/classes")
+# Racine d'un clone de https://github.com/trailheadapps/apex-recipes
+RECIPES_ROOT = _get("EMUSF_RECIPES_ROOT",
+                    os.path.join(os.path.dirname(_REPO_ROOT), "apex-recipes"))

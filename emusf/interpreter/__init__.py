@@ -5,10 +5,12 @@ _classes (mixins) et _helpers (exceptions + utilitaires)."""
 
 from ._core import ApexInterpreter
 from ._helpers import (
-    format_error, ReturnException, ApexException, BreakException, ContinueException,
+    format_error, ReturnException, ApexException, AssertException,
+    BreakException, ContinueException,
 )
 
 __all__ = [
     "ApexInterpreter", "format_error",
-    "ReturnException", "ApexException", "BreakException", "ContinueException",
+    "ReturnException", "ApexException", "AssertException",
+    "BreakException", "ContinueException",
 ]

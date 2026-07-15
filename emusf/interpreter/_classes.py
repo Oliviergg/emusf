@@ -16,7 +16,7 @@ from ..ast_nodes import (
 from ._helpers import (
     ReturnException, ApexException, BreakException, ContinueException,
     format_error, _common_prefix_len, _common_prefix, _unescape_html,
-    _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes,
+    _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes, _ci_key, ApexToken,
 )
 
 
@@ -35,15 +35,43 @@ class ClassesMixin:
             current = parent
         return chain
 
+    @staticmethod
+    def _method_lookup(cls, method_name):
+        """Méthode d'une classe, insensible à la casse (comme Apex)."""
+        m = cls.methods.get(method_name)
+        if m is not None:
+            return m
+        ml = method_name.lower()
+        for name, mdef in cls.methods.items():
+            if name.lower() == ml:
+                return mdef
+        return None
+
+    @staticmethod
+    def _overloads_lookup(cls, method_name):
+        """Surcharges d'une méthode, insensible à la casse. None si aucune."""
+        overloads = getattr(cls, "overloads", None)
+        if not overloads:
+            return None
+        found = overloads.get(method_name)
+        if found is not None:
+            return found
+        ml = method_name.lower()
+        for name, defs in overloads.items():
+            if name.lower() == ml:
+                return defs
+        return None
+
     def _resolve_method_in_chain(self, class_def, method_name, args=None):
         """Cherche une méthode en remontant la chaîne d'héritage."""
         for cls in self._resolve_class_chain(class_def):
-            if args is not None and hasattr(cls, 'overloads') and method_name in cls.overloads:
+            if args is not None and self._overloads_lookup(cls, method_name):
                 resolved = self._resolve_overload(cls, method_name, args)
                 if resolved:
                     return resolved
-            if method_name in cls.methods:
-                return cls.methods[method_name]
+            found = self._method_lookup(cls, method_name)
+            if found is not None:
+                return found
         return None
 
     def _resolve_class(self, name: str):
@@ -68,7 +96,39 @@ class ClassesMixin:
             if name in cls.inner_classes:
                 return cls.inner_classes[name]
 
+        # Fallback insensible à la casse (Apex l'est) — top-level puis inner
+        key = _ci_key(self.classes, name)
+        if key is not None:
+            return self.classes[key]
+        nl = name.lower()
+        for cls in self.classes.values():
+            for iname, idef in cls.inner_classes.items():
+                if iname.lower() == nl:
+                    return idef
+
         return None
+
+    def _init_instance_fields(self, instance, chain):
+        """Évalue les initialisateurs de champs d'instance (parent d'abord),
+        avec this = instance : `List<X> queue = new List<X>();`,
+        `private Organization orgShape = getOrgShape();`…
+        Un initialisateur qui plante laisse le champ à null."""
+        saved_instance = self._current_instance
+        saved_class = self._current_class
+        self._current_instance = instance
+        try:
+            for cls in reversed(chain):
+                self._current_class = cls
+                for field_name in cls.instance_fields:
+                    const = cls.constants.get(field_name)
+                    if const and const[1] is not None and instance.get(field_name) is None:
+                        try:
+                            instance[field_name] = self._eval(const[1])
+                        except Exception:
+                            pass
+        finally:
+            self._current_instance = saved_instance
+            self._current_class = saved_class
 
     def _create_instance(self, class_def, args):
         """Crée une instance avec support de l'héritage."""
@@ -85,15 +145,29 @@ class ClassesMixin:
             for field_name in cls.instance_fields:
                 if field_name not in instance:
                     instance[field_name] = None
+        self._init_instance_fields(instance, chain)
 
         # Trouver et exécuter le constructeur
         constructor = None
-        for cls in chain:
+        ctor_idx = 0
+        for i, cls in enumerate(chain):
             ctor = self._find_constructor(cls, len(args))
             if ctor:
                 constructor = ctor
+                ctor_idx = i
                 break
         if constructor:
+            # super() implicite (comme Apex) : exécuter les constructeurs sans
+            # argument des ancêtres (racine d'abord), sauf si le constructeur
+            # commence par un super(...) explicite
+            explicit_super = (bool(constructor.body)
+                              and isinstance(constructor.body[0], MethodCallStmt)
+                              and getattr(constructor.body[0].call, "obj", None) == "_super")
+            if not explicit_super:
+                for ancestor in reversed(chain[ctor_idx + 1:]):
+                    parent_ctor = self._find_constructor(ancestor, 0)
+                    if parent_ctor and not parent_ctor.params:
+                        self._run_constructor(instance, ancestor, parent_ctor, [])
             self._run_constructor(instance, class_def, constructor, args)
         elif args:
             # Auto-constructeur pour les classes Exception sans constructeur explicite
@@ -117,6 +191,7 @@ class ClassesMixin:
         # Initialize instance fields with defaults
         for field_name, field_type in class_def.instance_fields.items():
             instance[field_name] = None
+        self._init_instance_fields(instance, [class_def])
 
         # If new_expr has fields (SObject-style: new Cls(field = val)), set them
         if new_expr.fields:
@@ -166,7 +241,16 @@ class ClassesMixin:
         for k, v in saved_vars.items():
             if "." in k:
                 new_scope[k] = v
+        # Contexte global Trigger : visible dans toutes les méthodes (comme Apex)
+        if "Trigger" in saved_vars:
+            new_scope["Trigger"] = saved_vars["Trigger"]
         for name, (type_name, expr_val) in class_def.constants.items():
+            # Les champs d'instance initialisés sont aussi dans constants (builder) :
+            # ils sont gérés à la construction, pas à chaque invocation (sinon
+            # ré-exécution exponentielle des initialisateurs, et écrasement des
+            # valeurs portées par l'instance).
+            if name in class_def.instance_fields:
+                continue
             key = "{}.{}".format(class_def.name, name)
             if key not in new_scope:
                 try:
@@ -269,7 +353,16 @@ class ClassesMixin:
         for k, v in saved_vars.items():
             if "." in k:
                 new_scope[k] = v
+        # Contexte global Trigger : visible dans toutes les méthodes (comme Apex)
+        if "Trigger" in saved_vars:
+            new_scope["Trigger"] = saved_vars["Trigger"]
         for name, (type_name, expr_val) in class_def.constants.items():
+            # Les champs d'instance initialisés sont aussi dans constants (builder) :
+            # ils sont gérés à la construction, pas à chaque invocation (sinon
+            # ré-exécution exponentielle des initialisateurs, et écrasement des
+            # valeurs portées par l'instance).
+            if name in class_def.instance_fields:
+                continue
             key = "{}.{}".format(class_def.name, name)
             if key not in new_scope:
                 try:
@@ -314,13 +407,22 @@ class ClassesMixin:
         for k, v in saved_vars.items():
             if "." in k:  # ClassName.CONST
                 new_scope[k] = v
+        # Contexte global Trigger : visible dans toutes les méthodes (comme Apex)
+        if "Trigger" in saved_vars:
+            new_scope["Trigger"] = saved_vars["Trigger"]
 
-        # Injecter les constantes de la classe courante (nom court)
+        # Injecter les constantes de la classe courante (nom court) — sans les
+        # champs d'instance (gérés à la construction, voir _init_instance_fields)
         for name, (type_name, expr) in class_def.constants.items():
+            if name in class_def.instance_fields:
+                continue
             key = "{}.{}".format(class_def.name, name)
             if key not in new_scope:
                 if expr is not None:
-                    new_scope[key] = self._eval(expr)
+                    try:
+                        new_scope[key] = self._eval(expr)
+                    except Exception:
+                        new_scope[key] = None
                 else:
                     new_scope[key] = None
             new_scope[name] = new_scope[key]

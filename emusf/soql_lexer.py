@@ -95,6 +95,16 @@ def tokenize(soql: str) -> list[SoqlToken]:
     while i < n:
         ch = soql[i]
 
+        # Commentaires /* ... */ et // (hors chaînes — traitées plus bas)
+        if ch == "/" and i + 1 < n and soql[i + 1] == "*":
+            end = soql.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if ch == "/" and i + 1 < n and soql[i + 1] == "/":
+            end = soql.find("\n", i + 2)
+            i = n if end == -1 else end + 1
+            continue
+
         # Whitespace
         if ch in " \t\r\n":
             i += 1
@@ -140,14 +150,21 @@ def tokenize(soql: str) -> list[SoqlToken]:
                 tokens.append(SoqlToken(TT.INTEGER, soql[start:i], start))
             continue
 
-        # Bind variable :varName ou :obj.field
+        # Bind variable :varName, :obj.field ou :UserInfo.getUsername()
         if ch == ':':
             start = i
             i += 1
             path = ""
-            while i < n and (soql[i].isalnum() or soql[i] in "_."):
-                path += soql[i]
-                i += 1
+            while i < n:
+                c = soql[i]
+                if c.isalnum() or c in "_.":
+                    path += c
+                    i += 1
+                elif c == "(" and i + 1 < n and soql[i + 1] == ")":
+                    path += "()"
+                    i += 2
+                else:
+                    break
             tokens.append(SoqlToken(TT.BIND, path, start))
             continue
 

@@ -137,9 +137,24 @@ class _Builder:
         td = tree.typeDeclaration()
         cd = td.classDeclaration()
         if cd is None:
-            raise _Unsupported("enum/interface top-level")
+            ed = td.enumDeclaration()
+            if ed is not None:
+                return self.build_enum(ed)
+            raise _Unsupported("interface top-level")
         mods = [m.getText().lower() for m in td.modifier()]
         return self.build_class(cd, mods, top_level=True)
+
+    def build_enum(self, ctx) -> ClassDef:
+        """Enum Apex → ClassDef à constantes-chaînes : Season.WINTER == 'WINTER'
+        (cohérent avec Trigger.operationType et le match par nom des switch)."""
+        name = ctx.id_().getText()
+        constants = {}
+        ec = ctx.enumConstants()
+        if ec is not None:
+            for cid in ec.id_():
+                vname = cid.getText()
+                constants[vname] = ("String", StringLiteral(vname))
+        return ClassDef(name=name, constants=constants, methods={})
 
     def build_class(self, ctx, mods, top_level: bool) -> ClassDef:
         name = ctx.id_().getText()
@@ -182,6 +197,9 @@ class _Builder:
                 inner = self.build_class(member.classDeclaration(),
                                          member_mods, top_level=False)
                 inner_classes[inner.name] = inner
+            elif member.enumDeclaration() is not None:
+                enum_def = self.build_enum(member.enumDeclaration())
+                inner_classes[enum_def.name] = enum_def
             else:
                 self.warnings.append("membre ignoré : {}".format(
                     _src(member)[:60]))

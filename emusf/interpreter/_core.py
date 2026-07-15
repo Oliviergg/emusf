@@ -61,6 +61,7 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
             return self.variables
         ctx = dict(self._current_instance)
         ctx.update(self.variables)  # les locales masquent les champs d'instance
+        ctx["this"] = self._current_instance  # :this.champ
         return ctx
 
     def register_platform_event_trigger(self, sobject, event_var, body_stmts):
@@ -123,6 +124,11 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         if args is None:
             args = []
         class_def = self.classes.get(class_name)
+        if class_def is None:
+            from ._helpers import _ci_key
+            key = _ci_key(self.classes, class_name)
+            if key is not None:
+                class_def = self.classes[key]
         if not class_def:
             raise Exception("Classe '{}' non chargée".format(class_name))
         method = self._resolve_overload(class_def, method_name, args)
@@ -131,33 +137,100 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         return self._invoke_method(class_def, method, args)
 
     @staticmethod
-    def _resolve_overload(class_def, method_name: str, args: list):
-        """Résout une surcharge de méthode par nombre et type d'arguments."""
-        candidates = getattr(class_def, 'overloads', {}).get(method_name)
-        if candidates:
-            # Filtrer par nombre de params
-            matching = [m for m in candidates if len(m.params) == len(args)]
-            if len(matching) == 1:
-                return matching[0]
-            if len(matching) > 1:
-                # Discriminer par type du premier argument
-                for m in matching:
-                    param_type = m.params[0][0].lower() if m.params else ""
-                    arg = args[0] if args else None
-                    if isinstance(arg, dict) and "map" in param_type:
-                        return m
-                    if isinstance(arg, list) and "list" in param_type:
-                        return m
-                    if isinstance(arg, set) and "set" in param_type:
-                        return m
-                    if isinstance(arg, str) and param_type in ("string", "id"):
-                        return m
-                    if isinstance(arg, (int, float)) and param_type in ("integer", "int", "decimal", "double", "long"):
-                        return m
-                # Pas de match par type, retourner le premier
-                return matching[0]
-        # Pas de surcharge, version par défaut
-        return class_def.methods.get(method_name)
+    def _arg_type_score(param_type: str, arg) -> int:
+        """Compatibilité d'un argument avec un type de paramètre déclaré.
+
+        2 = match fort, 1 = compatible, 0 = neutre (inconnu/null), -1 = incompatible.
+        Les SObjects sont des dicts marqués _sobject_type ; les instances de
+        classes user portent _class/_type ; les résultats SOQL sont des dicts nus.
+        """
+        import datetime as _dt
+
+        p = param_type.lower().strip()
+        if arg is None or p == "object":
+            return 1 if p == "object" and arg is not None else 0
+        if p.startswith("list<") or p.endswith("[]"):
+            return 2 if isinstance(arg, list) else -1
+        if p.startswith("set<"):
+            return 2 if isinstance(arg, set) else -1
+        if p.startswith("map<"):
+            return (2 if isinstance(arg, dict)
+                    and "_class" not in arg and "_sobject_type" not in arg else -1)
+        if p in ("string", "id"):
+            return 2 if isinstance(arg, str) else -1
+        if p == "boolean":
+            return 2 if isinstance(arg, bool) else -1
+        if p in ("integer", "int", "long"):
+            if isinstance(arg, bool):
+                return -1
+            return 2 if isinstance(arg, int) else -1
+        if p in ("decimal", "double"):
+            if isinstance(arg, bool):
+                return -1
+            return 2 if isinstance(arg, float) else (1 if isinstance(arg, int) else -1)
+        if p == "blob":
+            return 2 if isinstance(arg, dict) and arg.get("_type") == "Blob" else -1
+        if p == "date":
+            return 2 if isinstance(arg, _dt.date) or (
+                isinstance(arg, dict) and arg.get("_type") == "Date") else -1
+        if p in ("datetime",):
+            return 2 if isinstance(arg, _dt.datetime) or (
+                isinstance(arg, dict) and arg.get("_type") == "DateTime") else -1
+        if p == "sobject":
+            if isinstance(arg, dict) and "_class" not in arg:
+                return 2 if "_sobject_type" in arg else 1
+            return -1
+        if isinstance(arg, dict):
+            # SObject précis (Account, My_Object__c…)
+            sobj = arg.get("_sobject_type")
+            if sobj is not None:
+                return 2 if sobj.lower() == p else -1
+            # Instance de classe user : nom exact, puis chaîne d'héritage
+            t = arg.get("_type")
+            if t is not None and t.lower() == p:
+                return 2
+            chain = arg.get("_chain")
+            if chain and any(c.name.lower() == p for c in chain):
+                return 1
+            cls = arg.get("_class")
+            if cls is not None and p in [i.lower() for i in getattr(cls, "interfaces", [])]:
+                return 1
+            # Dict nu (résultat SOQL…) face à un type user/SObject précis : plausible
+            if "_class" not in arg and "_type" not in arg:
+                return 1
+            return 0
+        if isinstance(arg, (list, set)):
+            return -1  # une collection ne matche pas un type scalaire/inconnu
+        # Type inconnu (enum user, interface…) avec argument scalaire : neutre
+        return 0
+
+    def _resolve_overload(self, class_def, method_name: str, args: list):
+        """Résout une surcharge par arité puis compatibilité de type de chaque
+        argument. Ne retombe jamais aveuglément sur le premier candidat quand un
+        argument est franchement incompatible (sinon les surcharges qui se
+        délèguent — doInsert(SObject) → doInsert(List<SObject>) — bouclent)."""
+        candidates = self._overloads_lookup(class_def, method_name)
+        if not candidates:
+            return self._method_lookup(class_def, method_name)
+
+        matching = [m for m in candidates if len(m.params) == len(args)]
+        if len(matching) == 1:
+            return matching[0]
+        if not matching:
+            return self._method_lookup(class_def, method_name)
+
+        best, best_score = None, None
+        for m in matching:
+            score, compatible = 0, True
+            for (ptype, _pname), arg in zip(m.params, args):
+                s = self._arg_type_score(ptype, arg)
+                if s < 0:
+                    compatible = False
+                    break
+                score += s
+            if compatible and (best_score is None or score > best_score):
+                best, best_score = m, score
+        return best or matching[0]
 
     def execute_file(self, path: str, method: str = "run"):
         """Charge un .cls, parse en AST, puis exécute."""
@@ -173,6 +246,11 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         if constructor_args is None:
             constructor_args = []
         class_def = self.classes.get(class_name)
+        if class_def is None:
+            from ._helpers import _ci_key
+            key = _ci_key(self.classes, class_name)
+            if key is not None:
+                class_def = self.classes[key]
         if not class_def:
             raise Exception("Classe '{}' non chargée".format(class_name))
 
@@ -224,6 +302,11 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         if args is None:
             args = []
         class_def = self.classes.get(class_name)
+        if class_def is None:
+            from ._helpers import _ci_key
+            key = _ci_key(self.classes, class_name)
+            if key is not None:
+                class_def = self.classes[key]
         if not class_def:
             raise Exception("Classe '{}' non chargée".format(class_name))
         method = class_def.methods.get(method_name)

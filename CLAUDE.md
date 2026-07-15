@@ -30,6 +30,10 @@ python3 apex_tests/run_tests.py
 
 # Run tests against real SFDX project metadata
 python3 apex_tests/run_sf_tests.py
+
+# Run trailheadapps/apex-recipes tests (clone at EMUSF_RECIPES_ROOT, default ../apex-recipes)
+# Serves as a coverage benchmark — prioritized gaps in TODO.md ("ÉVOLUTIONS INTERPRÉTEUR")
+python3 apex_tests/run_recipes_tests.py [pattern] [--json report.json]
 ```
 
 ## Architecture

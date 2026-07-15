@@ -333,11 +333,26 @@ class SoqlCompiler:
 
         return None
 
+    # Getters UserInfo utilisables en bind (:UserInfo.getUsername()) —
+    # mêmes valeurs que _ns_userinfo côté interpréteur
+    _USERINFO_BINDS = {
+        "getuserid": "005000000000001AAA",
+        "getusername": "testuser@example.com",
+        "getname": "Test User",
+        "getuseremail": "testuser@example.com",
+    }
+
     def _resolve_bind(self, path: str):
         """Résout une bind variable depuis le contexte."""
         # Essayer le chemin complet d'abord (ClassName.CONSTANT)
         if path in self.context:
             return self._convert_value(self.context[path])
+
+        # :UserInfo.getXxx() — getter statique connu
+        if path.lower().startswith("userinfo.") and path.endswith("()"):
+            getter = path[len("UserInfo."):-2].lower()
+            if getter in self._USERINFO_BINDS:
+                return self._USERINFO_BINDS[getter]
 
         # Chemin doté : obj.field
         parts = path.split(".")

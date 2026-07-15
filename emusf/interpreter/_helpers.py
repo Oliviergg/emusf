@@ -15,6 +15,38 @@ class ApexException(Exception):
     pass
 
 
+class AssertException(ApexException):
+    """Échec d'assertion (System.assert*, Assert.*) — distinguée pour que les
+    runners de test classent le test en FAIL plutôt qu'en ERROR."""
+    pass
+
+
+class ApexToken(dict):
+    """Dict hashable pour les tokens Apex immuables (SObjectType, SObjectField,
+    Describe*Result…) — utilisables comme clés de Map ou éléments de Set."""
+
+    def __hash__(self):
+        return hash((self.get("_type"), self.get("name"), self.get("_sobject")))
+
+    def __eq__(self, other):
+        return isinstance(other, dict) and dict.__eq__(self, other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
+def _ci_key(d, name):
+    """Clé exacte, sinon insensible à la casse (Apex l'est partout).
+    Retourne la clé réelle du dict, ou None si absente."""
+    if name in d:
+        return name
+    nl = name.lower()
+    for k in d:
+        if isinstance(k, str) and k.lower() == nl:
+            return k
+    return None
+
+
 def format_error(exc) -> str:
     """Message d'erreur runtime préfixé de sa localisation Apex si connue :
     'XPLPrepareService:73 — <message>'. L'interpréteur attache _emusf_location

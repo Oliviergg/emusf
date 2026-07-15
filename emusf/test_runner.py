@@ -11,7 +11,8 @@ import glob
 import sys
 
 from .apex_parser import ApexParser
-from .interpreter import ApexInterpreter, ReturnException
+from .interpreter import ApexInterpreter, ReturnException, AssertException
+from .interpreter._builtins import _UNHANDLED
 from .ast_nodes import MethodCall, MethodCallStmt
 
 
@@ -38,24 +39,34 @@ class ApexTestInterpreter(ApexInterpreter):
         self.failures = []
 
     def _exec_method_call(self, call: MethodCall):
-        args = [self._eval(a) for a in call.args]
-
-        # System.assert(condition)
-        if call.obj == "System" and call.method == "assert":
-            self._do_assert(args)
-            return None
-
-        # System.assertEquals(expected, actual)
-        if call.obj == "System" and call.method == "assertEquals":
-            self._do_assert_equals(args)
-            return None
-
-        # System.assertNotEquals(expected, actual)
-        if call.obj == "System" and call.method == "assertNotEquals":
-            self._do_assert_not_equals(args)
+        # System.assert / assertEquals / assertNotEquals
+        if call.obj == "System" and call.method in ("assert", "assertEquals", "assertNotEquals"):
+            args = [self._eval(a) for a in call.args]
+            if call.method == "assert":
+                self._do_assert(args)
+            elif call.method == "assertEquals":
+                self._do_assert_equals(args)
+            else:
+                self._do_assert_not_equals(args)
             return None
 
         return super()._exec_method_call(call)
+
+    def _ns_assert(self, method, args):
+        """Compte les assertions de la classe Assert (API moderne).
+
+        Un échec lève AssertException (le test s'arrête, comme en vrai
+        Salesforce) ; les runners la classent en FAIL plutôt qu'en ERROR.
+        """
+        try:
+            result = super()._ns_assert(method, args)
+        except AssertException as e:
+            self.assertions_failed += 1
+            self.failures.append(str(e))
+            raise
+        if result is not _UNHANDLED:
+            self.assertions_passed += 1
+        return result
 
     def _do_assert(self, args):
         condition = args[0] if args else False

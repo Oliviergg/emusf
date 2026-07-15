@@ -16,7 +16,7 @@ from ..ast_nodes import (
 from ._helpers import (
     ReturnException, ApexException, BreakException, ContinueException,
     format_error, _common_prefix_len, _common_prefix, _unescape_html,
-    _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes,
+    _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes, _ci_key, ApexToken,
 )
 
 
@@ -53,13 +53,19 @@ class StatementsMixin:
 
         elif isinstance(stmt, Assign):
             val = self._eval(stmt.value)
-            self.variables[stmt.var_name] = val
+            # Réutiliser la variable existante quelle que soit sa casse (Apex)
+            var_name = stmt.var_name
+            if var_name not in self.variables:
+                var_name = _ci_key(self.variables, var_name) or var_name
+            self.variables[var_name] = val
             # Synchroniser la variable statique si elle existe (ClassName.field)
-            if self._current_class and stmt.var_name in self._current_class.constants:
-                self.variables["{}.{}".format(self._current_class.name, stmt.var_name)] = val
+            if self._current_class and var_name in self._current_class.constants:
+                self.variables["{}.{}".format(self._current_class.name, var_name)] = val
             # Synchroniser le champ d'instance si assigné sans this.
-            if self._current_instance is not None and stmt.var_name in self._current_instance and stmt.var_name not in ("_type", "_class", "_chain"):
-                self._current_instance[stmt.var_name] = val
+            if self._current_instance is not None and var_name not in ("_type", "_class", "_chain"):
+                ikey = _ci_key(self._current_instance, var_name)
+                if ikey is not None and ikey not in ("_type", "_class", "_chain"):
+                    self._current_instance[ikey] = val
 
         elif isinstance(stmt, FieldSet):
             # this.field = value
@@ -68,6 +74,10 @@ class StatementsMixin:
                 return
 
             obj = self.variables.get(stmt.obj)
+            if obj is None and stmt.obj not in self.variables:
+                okey = _ci_key(self.variables, stmt.obj)
+                if okey is not None:
+                    obj = self.variables[okey]
             if isinstance(obj, list):
                 # Array index set: arr[i] = val
                 try:
@@ -80,7 +90,9 @@ class StatementsMixin:
                 except (ValueError, TypeError):
                     pass
             if isinstance(obj, dict):
-                obj[stmt.field] = self._eval(stmt.value)
+                # Écrire dans le champ existant quelle que soit sa casse
+                fkey = _ci_key(obj, stmt.field) or stmt.field
+                obj[fkey] = self._eval(stmt.value)
             elif obj is None:
                 # Null safety — create the object on the fly (Apex allows setting fields on null refs that were just declared)
                 return
@@ -167,7 +179,15 @@ class StatementsMixin:
                 if case_values is None:
                     continue  # else — handled below
                 for cv in case_values:
-                    if self._eval(cv) == val:
+                    cv_val = self._eval(cv)
+                    if cv_val == val:
+                        matched = True
+                        break
+                    # Cas enum : `when BEFORE_INSERT` — l'identifiant n'est pas
+                    # une variable ; matcher son nom contre la valeur (string)
+                    if (cv_val is None and isinstance(cv, Variable)
+                            and isinstance(val, str)
+                            and cv.name.lower() == val.lower()):
                         matched = True
                         break
                 if matched:
