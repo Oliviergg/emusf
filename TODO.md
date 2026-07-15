@@ -65,7 +65,23 @@ baseline honnête après P3 = 55/297 (18%) ; après la passe P1-P10 du 2026-07-1
    verifyHMAC, HMAC-SHA384/512) ; EncodingUtil.base64Decode retourne un Blob (il retournait une
    chaîne décodée UTF-8, corrompant le binaire !) + urlDecode ; String.name()/toString() (enums).
 
-Reste à faire (état au run 155/313) :
+[FAIT 2026-07-15 soir] Bloc trigger-framework (182/313 = 58%, AccountTriggerHandler 9/9) :
+   variables statiques partagées entre interpréteurs (org._active_interp : le callback de trigger
+   hérite des ClassName.champ de l'appelant et les repropage) ; _invoke_instance_method et les
+   constructeurs persistent les écritures de statiques (seul _invoke_method le faisait) ;
+   affectation Classe.champ = v (FieldSet sur nom de classe) et résolution lecture/écriture des
+   statiques par suffixe (inner class → statique de l'englobante) ; Trigger.new null en delete /
+   Trigger.old null en insert (comme SF) + Trigger.old porte les enregistrements complets ;
+   addError() bloque le DML (FIELD_CUSTOM_VALIDATION_EXCEPTION) ; ALL ROWS interroge la corbeille
+   (IsDeleted) ; X[] var = [SELECT…] exécute le SOQL (déclarations tableau) ; this.champ++ (builder
+   l'ignorait) ; System.debug(LoggingLevel, msg) affiche le message ; Database.* devine le type
+   des records sans marqueur.
+
+Reste à faire (état au run 182/313) :
+
+P-G — reliquat trigger-framework : bypass API (Set statique contains), maxLoopCount (exception au
+   dépassement), message d'exception user au getMessage(), MetadataTriggerHandler activeHandler
+   (stub + custom metadata), PlatformEventRecipesTriggerHandler.
 
 P-A' — reliquat sécurité : accès à un champ non requêté/strippé devrait lever SObjectException
    (les dicts rendent null) — 2-3 tests 'Negative' en dépendent ; RestContext/RestRequest pour

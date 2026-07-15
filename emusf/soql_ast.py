@@ -18,6 +18,7 @@ class SoqlSelect:
     having: Optional[SoqlExpr] = None
     order_by: Optional[list] = None  # list[SoqlOrderItem]
     limit: Optional[int] = None
+    all_rows: bool = False  # LIMIT … ALL ROWS — inclut la corbeille
 
 
 @dataclass

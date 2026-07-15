@@ -576,6 +576,13 @@ class _Builder:
                     return [Increment(var_name=target.name)]
                 if ctx.DEC() is not None:
                     return [Decrement(var_name=target.name)]
+            if isinstance(target, FieldAccess):
+                # this.count++ / obj.champ-- → FieldSet(champ = champ ± 1)
+                delta = 1 if ctx.INC() is not None else -1
+                return [FieldSet(
+                    obj=target.obj, field=target.field,
+                    value=BinaryOp(left=target, op="+",
+                                   right=IntegerLiteral(value=delta)))]
             raise _Unsupported("++/-- sur expression")
 
         expr = self.expr(ctx)

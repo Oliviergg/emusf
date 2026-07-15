@@ -240,6 +240,22 @@ class PgTestOrg(TriggerMixin, PgOrg):
           Salesforce l'objet existe toujours)
         - colonne absente → ajoutée en TEXT (le champ existe toujours dans
           Salesforce, valeur null tant que rien n'est écrit) puis retry."""
+        rows = self._execute_with_schema_retry(cq)
+        # ALL ROWS : ajouter les enregistrements supprimés (corbeille) —
+        # filtrés par Id si la requête en porte un, sinon tous ceux de l'objet
+        if getattr(cq, "all_rows", False) and isinstance(rows, list):
+            bin_rows = self._recycle_bin.get(cq.sobject.lower(), {})
+            params = set(str(p) for p in (cq.params or []))
+            for rid, raw in bin_rows.items():
+                if params and str(rid) not in params:
+                    continue
+                row = {("Id" if k == "id" else k): v for k, v in raw.items()}
+                row["IsDeleted"] = True
+                row["_sobject_type"] = cq.sobject
+                rows.append(row)
+        return rows
+
+    def _execute_with_schema_retry(self, cq):
         import psycopg2.errors
         import re as _re
         for _ in range(12):  # borne les ALTER successifs
@@ -302,6 +318,15 @@ class PgTestOrg(TriggerMixin, PgOrg):
         "case": [],
     }
 
+    @staticmethod
+    def _check_add_errors(records):
+        """Un record marqué par addError() en before-trigger bloque le DML."""
+        for record in records:
+            if isinstance(record, dict) and record.get("_errors"):
+                errors = record.pop("_errors")
+                raise DmlValidationError(
+                    "FIELD_CUSTOM_VALIDATION_EXCEPTION, {}".format(errors[0]))
+
     def _validate_required(self, sobject: str, records: list):
         required = self.REQUIRED_FIELDS.get(sobject.lower())
         if not required:
@@ -322,6 +347,7 @@ class PgTestOrg(TriggerMixin, PgOrg):
                 record["Id"] = self._generate_id(sobject)
 
         self._fire_triggers("before_insert", sobject, records)
+        self._check_add_errors(records)
 
         # Auto-create table if needed (et auto-extend si elle existe déjà)
         self._auto_create_table(sobject, records)
@@ -407,6 +433,7 @@ class PgTestOrg(TriggerMixin, PgOrg):
         """Update des enregistrements. Chaque record doit avoir un Id existant."""
         self._validate_required(sobject, records)
         self._fire_triggers("before_update", sobject, records)
+        self._check_add_errors(records)
         self._auto_extend_table(sobject, records)
         self._dirty_tables.add(sobject.lower())
 
@@ -455,21 +482,29 @@ class PgTestOrg(TriggerMixin, PgOrg):
         )
 
     def delete(self, sobject: str, record_ids: list) -> DmlResult:
-        """Delete des enregistrements par Id (copie en corbeille pour undelete)."""
-        self._fire_triggers("before_delete", sobject, [{"Id": rid} for rid in record_ids])
-        self._dirty_tables.add(sobject.lower())
-
+        """Delete des enregistrements par Id (copie en corbeille pour undelete).
+        Trigger.old porte les enregistrements complets (comme Salesforce)."""
         import psycopg2.extras as _extras
         cur = self.conn.cursor(cursor_factory=_extras.RealDictCursor)
+        old_rows = []
         for rid in record_ids:
+            row = None
             try:
                 cur.execute("SELECT * FROM {}.{} WHERE id = %s".format(
                     self.schema_name, sobject.lower()), [rid])
-                row = cur.fetchone()
-                if row:
-                    self._recycle_bin.setdefault(sobject.lower(), {})[rid] = dict(row)
+                raw = cur.fetchone()
+                if raw:
+                    row = {("Id" if k == "id" else k): v for k, v in raw.items()}
+                    self._recycle_bin.setdefault(sobject.lower(), {})[rid] = dict(raw)
             except Exception:
                 self.conn.rollback()
+            old_rows.append(row or {"Id": rid})
+
+        # Delete : Trigger.new est vide, Trigger.old porte les enregistrements
+        self._fire_triggers("before_delete", sobject, [], old_records=old_rows)
+        self._dirty_tables.add(sobject.lower())
+
+        for rid in record_ids:
             cur.execute(
                 "DELETE FROM {}.{} WHERE id = %s".format(
                     self.schema_name, sobject.lower()
@@ -484,7 +519,7 @@ class PgTestOrg(TriggerMixin, PgOrg):
         self.conn.commit()
         cur.close()
 
-        self._fire_triggers("after_delete", sobject, [{"Id": rid} for rid in record_ids])
+        self._fire_triggers("after_delete", sobject, [], old_records=old_rows)
         return DmlResult(success=True, record_ids=record_ids)
 
     def undelete(self, record_ids: list) -> DmlResult:

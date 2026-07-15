@@ -271,6 +271,11 @@ class ClassesMixin:
         except ReturnException:
             pass
 
+        # Persister les modifications de variables statiques (ClassName.field)
+        for k, v in self.variables.items():
+            if "." in k:
+                saved_vars[k] = v
+
         self.variables = saved_vars
         self._current_instance = saved_instance
         self._current_class = saved_class
@@ -382,6 +387,11 @@ class ClassesMixin:
                 self._exec_stmt(stmt)
         except ReturnException as ret:
             result = ret.value
+
+        # Persister les modifications de variables statiques (ClassName.field)
+        for k, v in self.variables.items():
+            if "." in k:
+                saved_vars[k] = v
 
         self.variables = saved_vars
         self._current_instance = saved_instance

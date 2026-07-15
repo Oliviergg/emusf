@@ -93,6 +93,11 @@ class BuiltinsMixin:
             if meth == "getsobjecttype":
                 return ApexToken({"_type": "SObjectType",
                                   "name": self._guess_sobject_type(obj) or "SObject"})
+            if meth == "adderror":
+                # En before-trigger : marque le record, le DML échouera
+                obj.setdefault("_errors", []).append(
+                    str(args[0]) if args else "error")
+                return None
             if meth == "getsobjects":
                 # Enfants d'une sous-requête : acct.getSObjects('Contacts')
                 if args:
@@ -494,7 +499,8 @@ class BuiltinsMixin:
         meth = method.lower()
         # System static methods
         if meth == "debug":
-            val = args[0] if args else ""
+            # System.debug(LoggingLevel.X, message) → le message est le dernier arg
+            val = args[-1] if args else ""
             self.output.append(str(val))
             print("DEBUG: {}".format(val))
             return None
@@ -613,13 +619,14 @@ class BuiltinsMixin:
                                     "Insert failed. First exception on row 0; "
                                     "first error: {}".format(str(e)[:200]))
             for r in recs:
-                if not (isinstance(r, dict) and "_sobject_type" in r):
+                sobject = r.get("_sobject_type") or self._guess_sobject_type(r) \
+                    if isinstance(r, dict) else None
+                if not sobject:
                     results.append({"_type": "SaveResult", "success": False, "id": None,
                                     "errors": [{"_type": "Database.Error",
                                                 "message": "invalid record",
                                                 "statusCode": "INVALID_TYPE"}]})
                     continue
-                sobject = r["_sobject_type"]
                 data = {k: v for k, v in r.items() if k != "_sobject_type"}
                 try:
                     if meth == "insert":

@@ -48,16 +48,52 @@ class StatementsMixin:
                 e._emusf_location = (cls, self._current_line)
             raise
 
+    def _exec_soql_literal(self, soql: str, type_name: str = None):
+        """Exécute un littéral SOQL inline et coerce selon le type déclaré :
+        List<X>/X[] → toutes les lignes, SObject scalaire → 1re ligne (ou
+        exception s'il n'y en a pas), COUNT() → entier."""
+        rows = self.org.execute_soql(soql, context=self._soql_context())
+        if "COUNT()" in soql.upper():
+            return len(rows) if isinstance(rows, list) else (rows or 0)
+        is_list = (type_name is None or "list<" in type_name.lower()
+                   or type_name.endswith("[]") or type_name.lower() in ("object",))
+        if is_list or not isinstance(rows, list):
+            return rows
+        if not rows:
+            raise ApexException("List has no rows for assignment to SObject")
+        return rows[0]
+
     def _exec_stmt_body(self, stmt: Stmt):
+        # Les triggers déclenchés par un DML de ce statement partagent les
+        # variables statiques (ClassName.champ) avec cet interpréteur
+        self.org._active_interp = self
         if isinstance(stmt, VarDecl):
-            self.variables[stmt.var_name] = self._eval(stmt.value)
+            if isinstance(stmt.value, StringLiteral) and \
+                    _is_soql_literal(stmt.value.value):
+                self.variables[stmt.var_name] = self._exec_soql_literal(
+                    stmt.value.value, stmt.type_name)
+            else:
+                self.variables[stmt.var_name] = self._eval(stmt.value)
 
         elif isinstance(stmt, Assign):
-            val = self._eval(stmt.value)
+            if isinstance(stmt.value, StringLiteral) and \
+                    _is_soql_literal(stmt.value.value):
+                val = self._exec_soql_literal(stmt.value.value)
+            else:
+                val = self._eval(stmt.value)
             # Réutiliser la variable existante quelle que soit sa casse (Apex)
             var_name = stmt.var_name
             if var_name not in self.variables:
-                var_name = _ci_key(self.variables, var_name) or var_name
+                resolved = _ci_key(self.variables, var_name)
+                if resolved is None:
+                    # Statique d'une classe visible (ex : inner class écrivant
+                    # une statique de la classe englobante) : X.varName
+                    vl = var_name.lower()
+                    for k in self.variables:
+                        if "." in k and k.split(".", 1)[1].lower() == vl:
+                            self.variables[k] = val
+                            return
+                var_name = resolved or var_name
             self.variables[var_name] = val
             # Synchroniser la variable statique si elle existe (ClassName.field)
             if self._current_class and var_name in self._current_class.constants:
@@ -79,6 +115,13 @@ class StatementsMixin:
                 okey = _ci_key(self.variables, stmt.obj)
                 if okey is not None:
                     obj = self.variables[okey]
+                else:
+                    # Affectation d'une variable statique : Classe.champ = valeur
+                    cls = self._resolve_class(stmt.obj)
+                    if cls is not None:
+                        self.variables["{}.{}".format(cls.name, stmt.field)] = \
+                            self._eval(stmt.value)
+                        return
             if isinstance(obj, list):
                 # Array index set: arr[i] = val
                 try:

@@ -55,6 +55,11 @@ class ExpressionsMixin:
                     ikey = _ci_key(self._current_instance, expr.name)
                     if ikey is not None and ikey not in ("_type", "_class", "_chain"):
                         return self._current_instance[ikey]
+                # Fallback: statique d'une classe visible (X.varName)
+                nl = expr.name.lower()
+                for k in self.variables:
+                    if "." in k and k.split(".", 1)[1].lower() == nl:
+                        return self.variables[k]
             return val
 
         elif isinstance(expr, FieldAccess):

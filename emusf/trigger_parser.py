@@ -36,6 +36,7 @@ def load_trigger(org, path: str, classes: dict = None):
         is_before = timing == "before"
 
         def callback(records, old_records=None):
+            caller = getattr(org, "_active_interp", None)
             interp = ApexInterpreter(org)
             if shared_classes:
                 for cls_name, cls_def in shared_classes.items():
@@ -52,9 +53,16 @@ def load_trigger(org, path: str, classes: dict = None):
                             interp.variables["{}.{}".format(cls_name, cname)] = None
             new_list = records or []
             old_list = old_records or []
+            # Les records DML arrivent sans marqueur de type — le trigger
+            # connaît son SObject (nécessaire aux DML imbriqués des handlers)
+            for r in new_list + old_list:
+                if isinstance(r, dict):
+                    r.setdefault("_sobject_type", sobject)
             interp.variables["Trigger"] = {
-                "new": new_list,
-                "old": old_list,
+                # Comme Salesforce : Trigger.new est null en delete,
+                # Trigger.old est null en insert/undelete
+                "new": None if operation == "delete" else new_list,
+                "old": old_list if operation in ("update", "delete") else None,
                 "newMap": {r.get("Id"): r for r in new_list
                            if isinstance(r, dict) and r.get("Id")},
                 "oldMap": {r.get("Id"): r for r in old_list
@@ -69,8 +77,22 @@ def load_trigger(org, path: str, classes: dict = None):
                 "operationType": event.upper(),  # BEFORE_INSERT, …
                 "size": len(new_list or old_list),
             }
-            for stmt in stmts:
-                interp._exec_stmt(stmt)
+            # Hériter des variables statiques de l'interpréteur appelant
+            # (compteurs de loop, circuit breakers, activeHandler…)
+            if caller is not None:
+                for k, v in caller.variables.items():
+                    if "." in k:
+                        interp.variables[k] = v
+            org._active_interp = interp
+            try:
+                for stmt in stmts:
+                    interp._exec_stmt(stmt)
+            finally:
+                org._active_interp = caller
+                if caller is not None:
+                    for k, v in interp.variables.items():
+                        if "." in k:
+                            caller.variables[k] = v
         return callback
 
     for event in events:

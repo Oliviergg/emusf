@@ -25,6 +25,7 @@ class CompiledQuery:
     is_count: bool = False
     is_aggregate: bool = False
     parent_joins: dict = field(default_factory=dict)  # alias → (sf_rel, fk_col, parent_table)
+    all_rows: bool = False  # inclure la corbeille (ALL ROWS)
 
 
 class SoqlCompiler:
@@ -199,6 +200,7 @@ class SoqlCompiler:
             field_aliases=field_aliases,
             subqueries=ast.subqueries,
             is_count=is_count,
+            all_rows=getattr(ast, "all_rows", False),
             is_aggregate=is_aggregate,
             parent_joins=parent_joins_info,
         )

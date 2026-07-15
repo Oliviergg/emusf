@@ -80,6 +80,13 @@ class SoqlParser:
                 tok = self.expect(TT.INTEGER)
                 limit = int(tok.value)
 
+        all_rows = False
+        if self.check(TT.IDENT) and self.peek().value.upper() == "ALL":
+            self.advance()
+            if self.check(TT.IDENT) and self.peek().value.upper() == "ROWS":
+                self.advance()
+            all_rows = True
+
         return SoqlSelect(
             fields=fields,
             from_object=from_object,
@@ -89,6 +96,7 @@ class SoqlParser:
             having=having,
             order_by=order_by,
             limit=limit,
+            all_rows=all_rows,
         )
 
     # === Champs SELECT ===
