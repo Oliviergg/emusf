@@ -2,8 +2,9 @@
 
 from .soql_compiler import compile_soql, CompiledQuery
 from .schema import SchemaRegistry, RelationshipMeta
-from .dml import DmlResult, SOBJECT_PREFIX, generate_sf_id, decode62, encode62, sf_checksum
+from .dml import DmlResult, DmlException, SOBJECT_PREFIX, generate_sf_id, decode62, encode62, sf_checksum
 from .pg_test_org import PgTestOrg
+from .pg_data_org import PgDataOrg
 from .context import ApexContext
 from .apex_parser import ApexParser
 from .interpreter import ApexInterpreter
@@ -17,7 +18,9 @@ __all__ = [
     "SchemaRegistry",
     "RelationshipMeta",
     "DmlResult",
+    "DmlException",
     "PgTestOrg",
+    "PgDataOrg",
     "ApexContext",
     "parse_flow",
     "load_flow",

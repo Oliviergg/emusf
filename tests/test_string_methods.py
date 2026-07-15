@@ -567,7 +567,8 @@ def test_static_value_of(org):
         System.debug(String.valueOf(42));
         System.debug(String.valueOf(true));
     """)
-    assert interp.output == ["42", "True"]
+    # Apex : String.valueOf(true) == 'true' (minuscule), pas 'True'
+    assert interp.output == ["42", "true"]
 
 
 def test_static_join(org):

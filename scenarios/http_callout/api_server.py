@@ -1,9 +1,10 @@
-"""Serveur API de test pour simuler une API externe appelée par Apex.
+"""Serveur API factice pour le scénario http_callout (cible des Named
+Credentials de credentials.yaml).
 
 Lance un serveur Flask sur le port 5555 avec quelques endpoints simples.
 
 Usage:
-    python test_api_server.py
+    python scenarios/http_callout/api_server.py   # puis run_scenario.py scenarios/http_callout
 """
 
 from flask import Flask, request, jsonify

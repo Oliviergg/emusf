@@ -31,6 +31,7 @@ class PgOrg:
         self.schema_name = schema
         self.sf_schema = SchemaRegistry()
         self._tables: dict = {}
+        self._column_types: dict = {}  # {table: {col: data_type PG}}
 
         # Charger les métadonnées des tables existantes
         self._load_table_meta()
@@ -47,15 +48,17 @@ class PgOrg:
         """Charge les colonnes de chaque table du schema."""
         cur = self.conn.cursor()
         cur.execute("""
-            SELECT table_name, column_name
+            SELECT table_name, column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = %s
             ORDER BY table_name, ordinal_position
         """, [self.schema_name])
-        for table, col in cur.fetchall():
+        for table, col, dtype in cur.fetchall():
             if table not in self._tables:
                 self._tables[table] = []
+                self._column_types[table] = {}
             self._tables[table].append(col)
+            self._column_types[table][col] = dtype
         cur.close()
 
     def get_columns(self, sobject: str) -> list:
@@ -69,9 +72,21 @@ class PgOrg:
         cq = compile_soql(soql, context, schema=self.schema_name, sf_schema=self.sf_schema)
         return self._execute(cq)
 
+    def _on_statement_error(self):
+        """Récupération après un statement SQL raté. Sans rollback, la
+        transaction resterait 'aborted' et toutes les requêtes suivantes
+        échoueraient ('current transaction is aborted'). PgDataOrg redéfinit
+        ce hook (savepoints) pour préserver les écritures en attente."""
+        self.conn.rollback()
+
     def _execute(self, cq: CompiledQuery) -> list:
         cur = self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(cq.sql, cq.params)
+        try:
+            cur.execute(cq.sql, cq.params)
+        except Exception:
+            self._on_statement_error()
+            cur.close()
+            raise
         raw_rows = cur.fetchall()
         cur.close()
 

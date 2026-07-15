@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional, Callable
+from typing import Optional
 
 from .pg_org import PgOrg, sf_to_pg_column
 from .dml import DmlResult, SOBJECT_PREFIX, DEFAULT_POD, DEFAULT_START_COUNTER, generate_sf_id
 from .schema import RelationshipMeta
+from .triggers_registry import TriggerMixin
 
 # Mapping types alternatifs → PostgreSQL pour create_sobject()
 _TYPE_MAP = {
@@ -15,7 +16,7 @@ _TYPE_MAP = {
 }
 
 
-class PgTestOrg(PgOrg):
+class PgTestOrg(TriggerMixin, PgOrg):
     """
     Org de test : INSERT/UPDATE/DELETE contre un schema PG dédié.
     Supporte les triggers before/after, création dynamique de tables.
@@ -97,6 +98,33 @@ class PgTestOrg(PgOrg):
         cur.execute("ROLLBACK TO SAVEPOINT test_start")
         cur.close()
 
+    def truncate_schema(self):
+        """Vide TOUTES les tables connues du schéma — isolation de test à la
+        Salesforce (seeAllData=false) : chaque test démarre sur une org vide,
+        y compris ce que d'autres processus (scénarios, seeds) ont écrit."""
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
+        tables = list(self._tables.keys())
+        if tables:
+            cur = self.conn.cursor()
+            try:
+                cur.execute("TRUNCATE {} CASCADE".format(
+                    ", ".join("{}.{}".format(self.schema_name, t) for t in tables)))
+            except Exception:
+                self.conn.rollback()
+                for table in tables:
+                    try:
+                        cur.execute("TRUNCATE {}.{} CASCADE".format(
+                            self.schema_name, table))
+                    except Exception:
+                        self.conn.rollback()
+            self.conn.commit()
+            cur.close()
+        self._dirty_tables = set()
+        self._id_counters = {}
+
     def truncate_all(self):
         """Vide uniquement les tables qui ont été modifiées."""
         try:
@@ -149,11 +177,67 @@ class PgTestOrg(PgOrg):
         table = sobject.lower()
         if table in self._tables:
             return
-        cols = {sf_to_pg_column(k): "TEXT" for r in records for k in r.keys()
-                if k != "Id" and not k.startswith("_")}
-        if not cols:
-            return
+        # Tout SObject Salesforce a un champ Name (auto-number à défaut)
+        cols = {"name": "TEXT"}
+        cols.update({sf_to_pg_column(k): "TEXT" for r in records for k in r.keys()
+                     if k != "Id" and not k.startswith("_")})
         self.create_sobject(sobject, {k: v for k, v in cols.items()})
+
+    def _execute(self, cq):
+        """Comme PgOrg._execute, avec la sémantique Salesforce des schémas :
+        - table absente → 0 lignes (création lazy à l'insert, mais dans
+          Salesforce l'objet existe toujours)
+        - colonne absente → ajoutée en TEXT (le champ existe toujours dans
+          Salesforce, valeur null tant que rien n'est écrit) puis retry."""
+        import psycopg2.errors
+        import re as _re
+        for _ in range(12):  # borne les ALTER successifs
+            try:
+                return super()._execute(cq)
+            except psycopg2.errors.UndefinedTable:
+                return []
+            except psycopg2.errors.UndefinedColumn as e:
+                m = _re.search(r'column (?:"|\w+\.)?([a-z0-9_]+)"? does not exist',
+                               str(e))
+                if not m:
+                    raise
+                column = m.group(1)
+                table = cq.sobject.lower()
+                if table not in self._tables or column in self._tables[table]:
+                    raise  # colonne d'une jointure ou déjà tentée : abandonner
+                cur = self.conn.cursor()
+                cur.execute("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT".format(
+                    self.schema_name, table, column))
+                cur.close()
+                self.conn.commit()
+                self._tables[table].append(column)
+        return super()._execute(cq)
+
+    def _auto_extend_table(self, sobject: str, records: list):
+        """Ajoute les colonnes manquantes (TEXT) quand un record porte des
+        champs inconnus de la table — miroir de _auto_create_table pour les
+        tables existantes (ex: champ posé par un trigger ou un flow)."""
+        table = sobject.lower()
+        if table not in self._tables:
+            return
+        known = set(self._tables[table])
+        new_cols = []
+        for record in records:
+            for key in record.keys():
+                if key.lower() == "id" or key.startswith("_"):
+                    continue
+                col = sf_to_pg_column(key)
+                if col not in known:
+                    new_cols.append(col)
+                    known.add(col)
+        if not new_cols:
+            return
+        cur = self.conn.cursor()
+        for col in new_cols:
+            cur.execute("ALTER TABLE {}.{} ADD COLUMN IF NOT EXISTS {} TEXT".format(
+                self.schema_name, table, col))
+        cur.close()
+        self._tables[table].extend(new_cols)
 
     def insert(self, sobject: str, records: list) -> DmlResult:
         """Insert des enregistrements. Auto-génère les Id. Auto-crée la table si absente."""
@@ -163,8 +247,9 @@ class PgTestOrg(PgOrg):
 
         self._fire_triggers("before_insert", sobject, records)
 
-        # Auto-create table if needed
+        # Auto-create table if needed (et auto-extend si elle existe déjà)
         self._auto_create_table(sobject, records)
+        self._auto_extend_table(sobject, records)
         self._dirty_tables.add(sobject.lower())
 
         cur = self.conn.cursor()
@@ -206,14 +291,46 @@ class PgTestOrg(PgOrg):
 
         self._fire_triggers("after_insert", sobject, records)
 
+        # Salesforce Files : l'insert d'un ContentVersion crée le
+        # ContentDocument et, si FirstPublishLocationId est fourni, le
+        # ContentDocumentLink vers l'enregistrement
+        if sobject.lower() == "contentversion":
+            self._simulate_content_documents(records)
+
         return DmlResult(
             success=True,
             record_ids=[r.get("Id", r.get("id")) for r in records],
         )
 
+    def _simulate_content_documents(self, records: list):
+        for record in records:
+            cv_id = record.get("Id", record.get("id"))
+            doc_id = self._generate_id("ContentDocument")
+            title = record.get("Title", record.get("title", ""))
+            self.insert("ContentDocument", [{
+                "Id": doc_id,
+                "Title": title,
+                "LatestPublishedVersionId": cv_id,
+                "FileExtension": record.get("PathOnClient", "").rsplit(".", 1)[-1]
+                if record.get("PathOnClient") and "." in record.get("PathOnClient") else "",
+            }])
+            # Renseigner ContentDocumentId sur le ContentVersion
+            record["ContentDocumentId"] = doc_id
+            self.update("ContentVersion", [{"Id": cv_id, "ContentDocumentId": doc_id}])
+            first_publish = record.get("FirstPublishLocationId",
+                                       record.get("firstpublishlocationid"))
+            if first_publish:
+                self.insert("ContentDocumentLink", [{
+                    "ContentDocumentId": doc_id,
+                    "LinkedEntityId": first_publish,
+                    "ShareType": "V",
+                    "Visibility": "AllUsers",
+                }])
+
     def update(self, sobject: str, records: list) -> DmlResult:
         """Update des enregistrements. Chaque record doit avoir un Id."""
         self._fire_triggers("before_update", sobject, records)
+        self._auto_extend_table(sobject, records)
         self._dirty_tables.add(sobject.lower())
 
         cur = self.conn.cursor()
@@ -267,20 +384,7 @@ class PgTestOrg(PgOrg):
         self._fire_triggers("after_delete", sobject, [{"Id": rid} for rid in record_ids])
         return DmlResult(success=True, record_ids=record_ids)
 
-    # --- Triggers ---
-
-    def add_trigger(self, event: str, sobject: str, callback: Callable):
-        if event not in self._triggers:
-            self._triggers[event] = {}
-        if sobject not in self._triggers[event]:
-            self._triggers[event][sobject] = []
-        self._triggers[event][sobject].append(callback)
-
-    def _fire_triggers(self, event: str, sobject: str, records: list,
-                       old_records: list = None):
-        callbacks = self._triggers.get(event, {}).get(sobject, [])
-        for cb in callbacks:
-            cb(records, old_records=old_records)
+    # --- Triggers : add_trigger/_fire_triggers hérités de TriggerMixin ---
 
     def _generate_id(self, sobject: str) -> str:
         prefix = SOBJECT_PREFIX.get(sobject, "0XX")

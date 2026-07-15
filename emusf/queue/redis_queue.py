@@ -12,7 +12,7 @@ class RedisJobQueue:
     """
     Async job queue backed by Redis.
     Jobs are serialized and pushed to a Redis list.
-    A worker process (worker.py) picks them up via BRPOP.
+    A worker process (utils/worker.py) picks them up via BRPOP.
     """
 
     def __init__(self, redis_url: str = "redis://localhost:6379/0"):

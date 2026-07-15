@@ -3,4 +3,10 @@ __pycache__/
 .pytest_cache/
 .sfdx/
 node_modules/
-static/slds/
+web/static/slds/
+.venv/
+.DS_Store
+.env
+credentials.yaml
+**/credentials.local.yaml
+scenarios/.credentials.local.yaml

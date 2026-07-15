@@ -15,30 +15,35 @@ python3 -m pytest tests/ -v
 # Run a single test
 python3 -m pytest tests/test_emulator.py::test_simple_soql -v
 
-# Execute an Apex class
-python3 run.py apex/AccountDemo.cls run
+# Unified entry point: REPL, Apex class, or scenario — see python3 run.py --help
+python3 run.py                                  # interactive Apex/SOQL REPL (sandbox org)
+python3 run.py --org data                       # REPL on exported Salesforce data (DML rolled back at end)
+python3 run.py apex/AccountDemo.cls [method]    # execute a static method (sandbox: DML + triggers)
+python3 run.py apex/AccountPgDemo.cls --org data  # execute against exported data
+python3 run.py scenarios/account_trigger        # run a scenario (classes + triggers + flows)
+python3 run.py scenarios/data_dml_demo --org data  # scenario against exported data (rollback by default)
+# Options: --ast (print AST), --trace [normal|verbose] (log execution: calls/statements/SOQL/DML), --no-seed / --no-triggers (sandbox), --entry (scenario entry file)
+# Options org data: --commit (persist DML, otherwise rolled back), --triggers (fire DML triggers)
 
-# Run Apex test suite (apex_tests/ directory)
-python3 run_tests.py
-
-# Run a scenario (loads classes + triggers from a directory)
-python3 run_scenario.py scenarios/account_trigger
+# Run Apex test suite (apex_tests/ directory, includes the Test*Pg.cls DML tests)
+python3 apex_tests/run_tests.py
 
 # Run tests against real SFDX project metadata
-python3 run_sf_tests.py
+python3 apex_tests/run_sf_tests.py
 ```
 
 ## Architecture
 
-**Parsing pipeline**: Apex source → `lexer.py` (tokenizer) → `apex_parser.py` (AST) → `interpreter.py` (execution). SOQL has its own parser in `parser.py`. Triggers are parsed by `trigger_parser.py`.
+**Parsing pipeline**: Apex source → `emusf/antlr/` (ANTLR apex-parser grammar, vendored generated parser, `builder.py` maps the parse tree to `ast_nodes`) → `interpreter.py` (execution). `apex_parser.py` (`ApexParser`) and `trigger_parser.py` (`TriggerParser`) are thin façades over the ANTLR chain. SOQL has its own parser in `parser.py`. See `emusf/antlr/README.md` for grammar provenance and regeneration.
 
 **AST nodes** (`ast_nodes.py`): All dataclass-based. Expressions (StringLiteral, MethodCall, BinaryOp, etc.) and statements (VarDecl, IfElse, ForEach, DmlInsert, etc.).
 
-**Two org implementations**:
+**Three org implementations**:
 - `PgOrg` — read-only org for querying exported Salesforce data
+- `PgDataOrg` — DML on the exported data (schema `data`): all writes accumulate in one transaction rolled back at end of run unless `--commit`; strict schema (missing table/column → `DmlException`, never CREATE/ALTER); values adapted to real column types; IDs generated with the emulator pod `Zz` (no collision with real IDs); triggers opt-in via `--triggers`. A long-lived session holds one open transaction (won't see concurrent external commits).
 - `PgTestOrg` — full test org with DML, auto-ID generation, trigger firing, and transaction isolation via SAVEPOINT/ROLLBACK
 
-**Interpreter** (`interpreter.py`): `_eval(expr)` evaluates expressions, `_exec_stmt(stmt)` executes statements. Control flow uses exceptions (`ReturnException`, `BreakException`, `ContinueException`). SObjects are plain Python dicts. Variables and classes stored in interpreter state.
+**Interpreter** (`interpreter/` package): `ApexInterpreter` is assembled from domain mixins — `_statements.py` (`_exec_stmt`), `_expressions.py` (`_eval`), `_builtins.py` (`_exec_method_call`: value/user-class dispatch, then a `_STATIC_NS` table routing each Apex namespace to a dedicated `_ns_<name>` handler — System, Database, Crypto, String, …), `_values.py` (`_call_*_method` for String/List/Map/Formula), `_classes.py` (instances, resolution, `_invoke_method`), with `_core.py` (class + `__init__`/lifecycle) and `_helpers.py` (exceptions + module utilities). `_eval(expr)` evaluates expressions, `_exec_stmt(stmt)` executes statements. Control flow uses exceptions (`ReturnException`, `BreakException`, `ContinueException`). SObjects are plain Python dicts.
 
 **DML & triggers**: Triggers fire in order (before → DML → after). `Trigger.new`/`Trigger.old` are set as context. IDs auto-generated using Salesforce base-62 encoding with 3-char prefixes per SObject type (defined in `dml.py`).
 

@@ -1,14 +1,9 @@
-"""Execute un scénario Apex cohérent depuis un répertoire.
+"""Exécution d'un scénario Apex cohérent depuis un répertoire.
 
 Charge toutes les classes (.cls), triggers (.trigger) et flows (.flow-meta.xml)
 du répertoire, puis exécute le point d'entrée (Main.cls par défaut).
 
-Usage:
-    python run_scenario.py <répertoire> [fichier_principal] [méthode]
-
-Exemples:
-    python run_scenario.py scenarios/account_trigger
-    python run_scenario.py scenarios/account_trigger Main.cls run
+Point d'entrée CLI : `python run.py scenarios/<répertoire>`.
 """
 
 import sys
@@ -53,8 +48,14 @@ def load_sf_classes(prefixes):
     return classes
 
 
-def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
-    """Charge et exécute un scénario Apex depuis un répertoire."""
+def load_scenario(scenario_dir, entry_file="Main.cls", method="run",
+                  org=None, commit=False):
+    """Charge et exécute un scénario Apex depuis un répertoire.
+
+    org : org préconstruite (PgDataOrg pour tourner sur l'export réel) ;
+          None = bac à sable PgTestOrg schéma test (chemin historique).
+    commit : (org data) committer les écritures à la fin — sinon rollback.
+    """
 
     if not os.path.isdir(scenario_dir):
         print("{}Erreur: répertoire '{}' introuvable{}".format(RED, scenario_dir, RESET))
@@ -107,8 +108,12 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
             sys.exit(1)
 
     # --- 2. Créer l'org PG ---
-    org = PgTestOrg(DSN, schema="test")
-    org.truncate_all()
+    from emusf.pg_data_org import PgDataOrg
+    is_data = isinstance(org, PgDataOrg)
+    if org is None:
+        org = PgTestOrg(DSN, schema="test")
+    if not is_data:
+        org.truncate_all()
 
     # Charger les métadonnées SFDX si disponibles
     if os.path.isdir(SFDX_OBJECTS):
@@ -120,13 +125,40 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
 
     # --- 2b. Seed data depuis le schema data ---
     seed_path = os.path.join(scenario_dir, ".seed_tables")
-    if os.path.exists(seed_path):
+    if is_data and os.path.exists(seed_path):
+        print("  {}SEED{} ignoré (org data = données réelles)".format(DIM, RESET))
+    if not is_data and os.path.exists(seed_path):
         with open(seed_path) as f:
             tables = [line.strip() for line in f if line.strip()]
         cur = org.conn.cursor()
+        # Option: nombre de lignes à copier pour les grosses tables
+        # (fichier .seed_limit avec 'table=N'), défaut illimité
+        limits = {}
+        limit_path = os.path.join(scenario_dir, ".seed_limit")
+        if os.path.exists(limit_path):
+            with open(limit_path) as f:
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        limits[k.strip().lower()] = int(v)
         for table in tables:
+            t = table.lower()
             try:
-                cur.execute("INSERT INTO test.{t} SELECT * FROM data.{t}".format(t=table.lower()))
+                # Recréer la table à l'identique de data (DROP pour éviter les
+                # décalages de colonnes avec une table test préexistante)
+                cur.execute("DROP TABLE IF EXISTS test.{t} CASCADE".format(t=t))
+                cur.execute(
+                    "CREATE TABLE test.{t} (LIKE data.{t} INCLUDING DEFAULTS)".format(t=t))
+                lim = " LIMIT {}".format(limits[t]) if t in limits else ""
+                cur.execute(
+                    "INSERT INTO test.{t} SELECT * FROM data.{t}{lim}".format(t=t, lim=lim))
+                org.conn.commit()
+                # Déclarer la table à l'org (créée après son introspection)
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'test' AND table_name = %s "
+                    "ORDER BY ordinal_position", [t])
+                org._tables[t] = [r[0] for r in cur.fetchall()]
                 org.conn.commit()
                 print("  {}SEED{} {} copiée depuis data".format(DIM, RESET, table))
             except Exception as e:
@@ -135,8 +167,10 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
         cur.close()
 
     # --- 3. Charger les triggers (.trigger) avec accès aux classes ---
-    for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.trigger"), recursive=True)):
-        load_trigger(org, path, classes=classes)
+    # Sur l'org data, les triggers DML sont opt-in (--triggers)
+    if not is_data or org.triggers_enabled:
+        for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.trigger"), recursive=True)):
+            load_trigger(org, path, classes=classes)
 
     # --- 3b. Charger les flows (.flow-meta.xml) ---
     for path in sorted(glob.glob(os.path.join(scenario_dir, "**", "*.flow-meta.xml"), recursive=True)):
@@ -148,21 +182,51 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
                 RED, os.path.basename(path), e, RESET
             ))
 
-    # --- 3c. Charger les Named Credentials (credentials.yaml) ---
+    # --- 3c. Charger les Named Credentials ---
+    # credentials.yaml (versionné, valeurs factices) puis credentials.local.yaml
+    # (gitignoré, secrets réels) qui l'emporte. Fallback sur le fichier partagé
+    # scenarios/.credentials.local.yaml.
     named_credentials = {}
-    cred_path = os.path.join(scenario_dir, "credentials.yaml")
-    if os.path.exists(cred_path):
-        named_credentials = load_named_credentials(cred_path)
+    for cred_path in (
+        os.path.join(os.path.dirname(scenario_dir.rstrip("/")), ".credentials.local.yaml"),
+        os.path.join(scenario_dir, "credentials.yaml"),
+        os.path.join(scenario_dir, "credentials.local.yaml"),
+    ):
+        if os.path.exists(cred_path):
+            named_credentials.update(load_named_credentials(cred_path))
+    if named_credentials:
         print("  {}CRED{} {} named credentials chargées".format(
             DIM, RESET, len(named_credentials)))
 
     # --- 4. Préparer l'interpréteur avec toutes les classes ---
     interp = ApexTestInterpreter(org, named_credentials=named_credentials)
+    from emusf.queue import SyncJobQueue
+    interp.job_queue = SyncJobQueue()  # exécution synchrone des Queueables
     for name, cls in classes.items():
         interp.classes[name] = cls
         for cname, (ctype, expr) in cls.constants.items():
             try:
-                interp.variables["{}.{}".format(name, cname)] = interp._eval(expr)
+                interp.variables["{}.{}".format(name, cname)] = (
+                    interp._eval(expr) if expr is not None else None)
+            except Exception:
+                pass
+
+    # --- 4a. Triggers de Platform Event (__e) — déclenchés par EventBus.publish.
+    # Chargés depuis le répertoire triggers/ du projet SFDX (ex: JobEventTrigger
+    # qui pilote la file de jobs Queueable).
+    triggers_dir = os.path.join(os.path.dirname(SF_CLASSES), "triggers")
+    if os.path.isdir(triggers_dir):
+        from emusf.trigger_parser import TriggerParser
+        for fname in sorted(os.listdir(triggers_dir)):
+            if not fname.endswith(".trigger"):
+                continue
+            try:
+                src = open(os.path.join(triggers_dir, fname)).read()
+                name, sobject, events, body = TriggerParser().parse_trigger(src)
+                if sobject.endswith("__e"):
+                    # event var = la variable de boucle Trigger.new (souvent 'evt')
+                    interp.register_platform_event_trigger(sobject, "evt", body)
+                    print("  {}PEVT{} {} sur {}".format(DIM, RESET, name, sobject))
             except Exception:
                 pass
 
@@ -205,8 +269,9 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
     try:
         interp._invoke_method(entry_class, method_def, [])
     except Exception as e:
+        from emusf.interpreter import format_error
         interp.assertions_failed += 1
-        interp.failures.append("Runtime error: {}".format(e))
+        interp.failures.append("Runtime error: {}".format(format_error(e)))
 
     # --- 6. Résultat ---
     print()
@@ -226,18 +291,19 @@ def load_scenario(scenario_dir, entry_file="Main.cls", method="run"):
                 print("  {} {}{}".format(RED, f, RESET))
 
     # Cleanup
-    org.truncate_all()
+    if is_data:
+        n = org.pending_dml
+        if commit:
+            org.commit()
+            if n:
+                print("\n{}{}{} écritures DML — COMMIT{}".format(GREEN, BOLD, n, RESET))
+        else:
+            org.rollback_all()
+            if n:
+                print("\n{}{} écritures DML annulées (rollback par défaut — "
+                      "--commit pour persister){}".format(DIM, n, RESET))
+    else:
+        org.truncate_all()
     org.conn.close()
 
     return failed == 0
-
-
-if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-
-    scenario_dir = args[0] if len(args) > 0 else "scenarios/account_trigger"
-    entry_file = args[1] if len(args) > 1 else "Main.cls"
-    method = args[2] if len(args) > 2 else "run"
-
-    ok = load_scenario(scenario_dir, entry_file, method)
-    sys.exit(0 if ok else 1)

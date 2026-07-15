@@ -105,8 +105,9 @@ def run_test_file(path: str, org, method: str = "run") -> dict:
     try:
         interp._exec_block(ast)
     except Exception as e:
+        from emusf.interpreter import format_error
         interp.assertions_failed += 1
-        interp.failures.append("Runtime error: {}".format(e))
+        interp.failures.append("Runtime error: {}".format(format_error(e)))
 
     return {
         "file": os.path.basename(path),

@@ -3,6 +3,20 @@ name = "emusf"
 version = "0.1.0"
 description = "Émulateur Salesforce - Apex/SOQL local avec PostgreSQL"
 requires-python = ">=3.11"
+dependencies = [
+    "psycopg2-binary",
+    # Doit rester en 4.13.x : la version du runtime doit correspondre à celle
+    # du générateur du parser vendoré (emusf/antlr/generated/)
+    "antlr4-python3-runtime~=4.13.2",
+    # Callouts HTTP (emusf/callout.py)
+    "PyYAML",
+    "requests",
+]
+
+[project.optional-dependencies]
+# flask : test_api_server.py (scénario http_callout)
+# cryptography : classe Apex Crypto (import paresseux dans l'interpréteur)
+dev = ["pytest", "flask", "cryptography"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

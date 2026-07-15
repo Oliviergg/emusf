@@ -11,6 +11,10 @@ CHECKSUM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
 # Pod/instance identifier (fixe par org, configurable)
 DEFAULT_POD = "IV"
 
+# Pod réservé aux Ids générés par l'émulateur sur l'org data : distinct des
+# pods Salesforce réels, donc aucune collision possible avec les Ids exportés
+EMUSF_POD = "Zz"
+
 # Compteur de départ réaliste (≈ milieu de plage SF)
 DEFAULT_START_COUNTER = 5_000_000_000
 
@@ -72,6 +76,7 @@ SOBJECT_PREFIX = {
     "CampaignMember": "00v",
     "ContentDocument": "069",
     "ContentVersion": "068",
+    "ContentDocumentLink": "06A",
     "Attachment": "00P",
     "Note": "002",
     "EmailMessage": "02s",
@@ -79,6 +84,13 @@ SOBJECT_PREFIX = {
     "RecordType": "012",
     "CustomObject__c": "a00",
 }
+
+
+class DmlException(Exception):
+    """Erreur DML — équivalent de System.DmlException en Apex.
+
+    Attrapable dans un try/catch Apex : l'interpréteur expose str(e)
+    via getMessage()."""
 
 
 class DmlResult:

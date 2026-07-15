@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import date, datetime
 from decimal import Decimal
 
 import re
 import xml.etree.ElementTree as ET
+
+# Permet `python web/app.py` depuis n'importe où (emusf est à la racine du repo)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, render_template, request, abort, redirect, url_for
 from markupsafe import Markup
@@ -28,9 +32,10 @@ from emusf.layout_parser import (
     PageLayout,
 )
 
-# --- Config ---
-DSN = "host=localhost port=6000 user=postgres password=dcc948df3501919f709cb976fa2cb24000be8b12 dbname=biup"
-SFDX_BASE = "/Users/olivier/Dev/btp/sf-btp/force-app/main/default"
+# --- Config (DSN et chemins SFDX centralisés dans emusf/config.py) ---
+from emusf.config import DSN, SFDX_OBJECTS
+
+SFDX_BASE = os.path.dirname(SFDX_OBJECTS)
 OBJECTS_DIR = os.path.join(SFDX_BASE, "objects")
 LAYOUTS_DIR = os.path.join(SFDX_BASE, "layouts")
 PAGES_DIR = os.path.join(SFDX_BASE, "pages")
