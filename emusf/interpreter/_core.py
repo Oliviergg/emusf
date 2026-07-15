@@ -43,6 +43,8 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         self._current_instance = None  # Instance en cours (pour this)
         self.named_credentials = named_credentials or {}  # Named Credentials (YAML)
         self._http_mock = None  # Instance HttpCalloutMock pour Test.setMock
+        self._current_user = None  # User courant (System.runAs), None = admin
+        self._current_profile = None  # Nom du profil du user courant
         self.job_queue = None  # File de Queueables (SyncJobQueue) si branchée
         # Triggers de Platform Event : {sobject_lower: (event_var, body_stmts)}
         self.platform_event_triggers = {}
@@ -52,6 +54,106 @@ class ApexInterpreter(StatementsMixin, ExpressionsMixin, BuiltinsMixin,
         # de gouverneur ; en synchrone une chaîne qui se ré-enfile (polling
         # CheckQueueJob, cascade de la machine à états) tournerait sans fin.
         self.async_budget = 200
+
+    def _resolve_profile_name(self, user):
+        """Nom du profil d'un user dict (via la table profile), None sinon."""
+        if not isinstance(user, dict):
+            return None
+        from ._helpers import _ci_key
+        pkey = _ci_key(user, "ProfileId")
+        profile_id = user.get(pkey) if pkey else None
+        if not profile_id:
+            return None
+        try:
+            rows = self.org.execute_soql(
+                "[SELECT Name FROM Profile WHERE Id = '{}']".format(profile_id))
+            if rows:
+                return rows[0].get("Name") or rows[0].get("name")
+        except Exception:
+            pass
+        return None
+
+    def _user_grants(self):
+        """Grants (objets/champs) du user courant via ses PermissionSetAssignment
+        et le registre org.permset_grants (rempli par le chargeur SFDX/runner).
+        None si aucun permission set assigné."""
+        user = self._current_user or {}
+        from ._helpers import _ci_key
+        ukey = _ci_key(user, "Id")
+        user_id = user.get(ukey) if ukey else None
+        if not user_id:
+            return None
+        cache = getattr(self, "_grants_cache", None)
+        if cache is None:
+            cache = self._grants_cache = {}
+        if user_id in cache:
+            return cache[user_id]
+        registry = getattr(self.org, "permset_grants", None) or {}
+        merged = None
+        try:
+            rows = self.org.execute_soql(
+                "[SELECT PermissionSetId FROM PermissionSetAssignment "
+                "WHERE AssigneeId = '{}']".format(user_id))
+            for row in rows or []:
+                ps_id = row.get("PermissionSetId") or row.get("permissionsetid")
+                if not ps_id:
+                    continue
+                ps = self.org.execute_soql(
+                    "[SELECT Name FROM PermissionSet WHERE Id = '{}']".format(ps_id))
+                name = (ps[0].get("Name") or ps[0].get("name") or "").lower() if ps else ""
+                grants = registry.get(name)
+                if grants:
+                    if merged is None:
+                        merged = {"objects": {}, "fields": {}}
+                    for obj, ops in grants.get("objects", {}).items():
+                        cur = merged["objects"].setdefault(obj, {})
+                        for op, allowed in ops.items():
+                            cur[op] = cur.get(op, False) or allowed
+                    for f, ops in grants.get("fields", {}).items():
+                        cur = merged["fields"].setdefault(f, {})
+                        for op, allowed in ops.items():
+                            cur[op] = cur.get(op, False) or allowed
+                elif name:
+                    # Permission set assigné mais grants inconnus : accès global
+                    # (comportement historique binaire)
+                    merged = {"objects": {"*": {"read": True, "create": True,
+                                                "edit": True, "delete": True}},
+                              "fields": {}}
+        except Exception:
+            pass
+        cache[user_id] = merged
+        return merged
+
+    def _describe_access(self, sobject=None, field=None, op="read") -> bool:
+        """Accès CRUD/FLS du user courant. True hors System.runAs ; sous le
+        profil 'Minimum Access - Salesforce', accès selon les permission sets
+        assignés (granularité objet/champ via org.permset_grants)."""
+        prof = self._current_profile
+        if not (prof and "minimum access" in prof.lower()):
+            return True
+        grants = self._user_grants()
+        if grants is None:
+            return False
+        objects = grants.get("objects", {})
+        if "*" in objects:
+            return True
+        if sobject is None:
+            return bool(objects)
+        so = sobject.lower()
+        if field is not None:
+            fl = field.lower()
+            fields = grants.get("fields", {})
+            f = fields.get(so + "." + fl)
+            if f is None:
+                # FLS des composants d'adresse portée par le champ composé
+                # (ShippingStreet/City/… → ShippingAddress)
+                for prefix in ("shipping", "billing", "mailing", "other"):
+                    if fl.startswith(prefix) and fl != prefix + "address":
+                        f = fields.get(so + "." + prefix + "address")
+                        break
+            return bool(f and f.get(op if op in ("read", "edit") else "edit"))
+        o = objects.get(so)
+        return bool(o and o.get(op))
 
     def _soql_context(self):
         """Contexte de résolution des binds SOQL : variables locales + champs

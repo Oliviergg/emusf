@@ -11,7 +11,7 @@ from ..ast_nodes import (
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
     ForCStyle, WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
-    MethodDef, ClassDef, NewSet, SwitchWhen,
+    MethodDef, ClassDef, NewSet, SwitchWhen, RunAs,
 )
 from ._helpers import (
     ReturnException, ApexException, BreakException, ContinueException,
@@ -201,6 +201,19 @@ class StatementsMixin:
                         for s in case_body:
                             self._exec_stmt(s)
                         break
+
+        elif isinstance(stmt, RunAs):
+            user = self._eval(stmt.user)
+            saved_user = self._current_user
+            saved_profile = self._current_profile
+            self._current_user = user if isinstance(user, dict) else None
+            self._current_profile = self._resolve_profile_name(self._current_user)
+            try:
+                for s in stmt.body:
+                    self._exec_stmt(s)
+            finally:
+                self._current_user = saved_user
+                self._current_profile = saved_profile
 
         elif isinstance(stmt, ForCStyle):
             if stmt.init:

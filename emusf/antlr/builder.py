@@ -33,7 +33,7 @@ from ..ast_nodes import (
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
     ForCStyle, WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt,
-    Increment, Decrement, SwitchWhen,
+    Increment, Decrement, SwitchWhen, RunAs,
     MethodDef, ClassDef,
 )
 
@@ -372,7 +372,13 @@ class _Builder:
                 ctx.localVariableDeclarationStatement().localVariableDeclaration())
         if ctx.expressionStatement() is not None:
             return self._expr_stmt(ctx.expressionStatement().expression())
-        # upsert, merge, undelete, runAs : non supportés par l'interpréteur
+        if ctx.runAsStatement() is not None:
+            ras = ctx.runAsStatement()
+            exprs = (ras.expressionList().expression()
+                     if ras.expressionList() is not None else [])
+            user_expr = self.expr(exprs[0]) if exprs else NullLiteral()
+            return [RunAs(user=user_expr, body=self._block_stmts(ras.block()))]
+        # upsert, merge, undelete : non supportés par l'interpréteur
         raise _Unsupported(type(ctx.getChild(0)).__name__)
 
     def _stmt_or_empty(self, statement_ctx) -> list:

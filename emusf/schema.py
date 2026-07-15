@@ -41,6 +41,9 @@ class SchemaRegistry:
     def resolve(
         self, plural_name: str, parent_sobject: str
     ) -> Optional[RelationshipMeta]:
+        # Forme qualifiée : (SELECT ... FROM Account.Contacts) → Contacts
+        if "." in plural_name:
+            plural_name = plural_name.rsplit(".", 1)[-1]
         key = "{}.{}".format(parent_sobject, plural_name).lower()
         return self._relationships.get(key)
 

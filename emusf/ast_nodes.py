@@ -222,6 +222,13 @@ class SwitchWhen(Stmt):
 
 
 @dataclass
+class RunAs(Stmt):
+    """System.runAs(user) { ... } — exécute le bloc sous un autre utilisateur."""
+    user: Expr
+    body: list  # list[Stmt]
+
+
+@dataclass
 class ForCStyle(Stmt):
     """for (init; condition; update) { body }"""
     init: Optional[Stmt]

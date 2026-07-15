@@ -92,6 +92,13 @@ class SoqlCompiler:
         sf_fields = []
         field_aliases = {}
         parent_joins_info = {}
+        # En Salesforce toute requête renvoie l'Id implicitement (nécessaire
+        # aux DML sur les résultats et aux FK des sous-requêtes enfant) —
+        # sauf dans un semi-join IN (SELECT …) qui doit rester monocolonne
+        if not is_count and not is_aggregate and not getattr(self, "_semi_join", False):
+            if not any(isinstance(f, SoqlField) and f.name.lower() == "id"
+                       for f in ast.fields):
+                ast.fields.append(SoqlField(name="Id"))
         if is_count:
             select_clause = "COUNT(*)"
         else:
@@ -271,7 +278,9 @@ class SoqlCompiler:
             return "({})::boolean {} %s".format(col, cmp.op)
 
         self.params.append(value)
-        return "{} {} %s".format(col, cmp.op)
+        # SOQL LIKE est insensible à la casse (contrairement au LIKE PG)
+        op = "ILIKE" if cmp.op.upper() == "LIKE" else cmp.op
+        return "{} {} %s".format(col, op)
 
     def _compile_in(self, in_expr: SoqlIn, main_alias: str = None, sobject: str = None) -> str:
         col = self._qualify_col(in_expr.field.lower(), main_alias, sobject)
@@ -280,6 +289,7 @@ class SoqlCompiler:
         # Sous-requête : IN (SELECT ...)
         if isinstance(in_expr.values, SoqlSelect):
             sub_compiler = SoqlCompiler(self.schema, self.context)
+            sub_compiler._semi_join = True
             sub_result = sub_compiler.compile(in_expr.values)
             self.params.extend(sub_result.params)
             return "{} {}IN ({})".format(col, neg, sub_result.sql)

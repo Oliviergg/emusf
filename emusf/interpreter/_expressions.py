@@ -21,6 +21,13 @@ from ._helpers import (
 
 
 class ExpressionsMixin:
+    def _eval_arg(self, expr: Expr):
+        """Évalue un argument d'appel : un littéral SOQL inline est exécuté
+        (méthode([SELECT ...]) reçoit les lignes, pas la chaîne)."""
+        if isinstance(expr, StringLiteral) and _is_soql_literal(expr.value):
+            return self.org.execute_soql(expr.value, context=self._soql_context())
+        return self._eval(expr)
+
     def _eval(self, expr: Expr):
         if isinstance(expr, StringLiteral):
             return expr.value
@@ -60,7 +67,7 @@ class ExpressionsMixin:
                 return {"_type": "SystemLabel"}
 
             # Schema.sObjectType → map des describes (Schema.sObjectType.X.isAccessible())
-            if expr.obj == "Schema" and expr.field == "sObjectType":
+            if expr.obj.lower() == "schema" and expr.field.lower() == "sobjecttype":
                 return {"_type": "SchemaSObjectTypeMap"}
 
             # SObjectType.Account → token SObjectType (getDescribe(), newSObject())
@@ -74,6 +81,10 @@ class ExpressionsMixin:
                 return ApexToken({"_type": "SObjectType", "name": expr.obj})
             # ParentJobResult.SUCCESS / FAILURE
             if expr.obj == "ParentJobResult":
+                return expr.field
+
+            # AccessType.READABLE / CREATABLE / UPDATABLE / UPSERTABLE (enum)
+            if expr.obj == "AccessType" and expr.obj not in self.variables:
                 return expr.field
 
             # ApexPages.severity → enum marker
@@ -299,7 +310,7 @@ class ExpressionsMixin:
                     return _field_of(rows[0], expr.method)
 
             target = self._eval(expr.target)
-            args = [self._eval(a) for a in expr.args]
+            args = [self._eval_arg(a) for a in expr.args]
 
             # System.X.method() — résoudre comme X.method() pour tout namespace
             # builtin qualifié par System (System.Assert, System.JSON, System.Test…)
@@ -439,6 +450,6 @@ class ExpressionsMixin:
             "ApexPages", "Messaging",
             "String", "Integer", "Pattern", "Formula", "FormulaEval",
             "Assert", "Decimal", "Double", "Id", "SObjectType",
-            "Matcher", "HttpRequest", "HttpResponse",
+            "Matcher", "HttpRequest", "HttpResponse", "Security",
         )
     }

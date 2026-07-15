@@ -38,12 +38,26 @@ baseline honnête après P3 = 55/297 (18%) ; après la passe P1-P10 du 2026-07-1
    Piège perf noté : _invoke_method ré-évaluait les initialisateurs d'instance à CHAQUE appel
    (travail exponentiel) — désormais exclus des boucles de constantes.
 
-Reste à faire (état au run 107/321) :
+[FAIT 2026-07-15 soir] P-A — System.runAs + FLS granulaire (116/313 = 37%) :
+   nœud AST RunAs + builder (les blocs runAs ne sont plus ignorés) ; contexte user courant
+   (_current_user/_current_profile) ; profils seedés par le runner + PermissionSet/Assignment ;
+   grants par objet/champ parsés des .permissionset-meta.xml (sfdx_loader.parse_permission_set,
+   org.permset_grants) ; describe (SObjectType/SObjectField/describeSObjects) et
+   Security.stripInaccessible granulaires (NoAccessException 'No access to entity', strip récursif
+   des enfants de sous-requête, champs composés Shipping*→ShippingAddress) ; UserInfo reflète runAs.
+   Au passage : Id implicite dans toute requête SOQL (sauf semi-join IN), sous-requêtes enfant OK
+   même sans Id explicite + forme qualifiée (FROM Account.Contacts), LIKE→ILIKE (insensible casse),
+   SOQL inline exécuté en argument de méthode (stripInaccessible(..., [SELECT...])), types de colonnes
+   inférés à l'auto-création (BIGINT/BOOLEAN/DOUBLE au lieu de tout-TEXT) + PgTestOrg.reset_schema(),
+   getSObjects('Children') et List.getSObjectType(), JSON.deserialize marque _sobject_type,
+   erreurs de @testSetup remontées (status SETUP: …), fix détection @isTest de classe.
+   StripInaccessible 1/11→9/10, Safely 2/16→8/16, SOQLRecipes 0→6/19, CustomRestEndpoint débloqué.
 
-P-A — 'List has no rows' en cascade (28 méthodes) : la plupart viennent de @testSetup qui échouent en
-   silence (le runner avale les erreurs de setup) ou de System.runAs(minAccessUser) no-op — les tests
-   FLS 'Negative' interrogent une org vide. → runner : remonter les erreurs de setup ; émulateur :
-   System.runAs + profils minimum (CustomRestEndpointRecipes 0/22 en dépend).
+Reste à faire (état au run 116/313) :
+
+P-A' — reliquat sécurité : accès à un champ non requêté/strippé devrait lever SObjectException
+   (les dicts rendent null) — 2-3 tests 'Negative' en dépendent ; RestContext/RestRequest pour
+   CustomRestEndpointRecipes (1/22, les 21 restants sont des sémantiques REST + QueryException).
 
 P-B — DMLException/allOrNone fidèles (~12 méthodes DMLRecipes) : Database.insert(rec, false) doit
    produire des SaveResult d'échec (pas d'exception), insert d'un doublon/champ requis manquant doit

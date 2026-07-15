@@ -98,6 +98,32 @@ class PgTestOrg(TriggerMixin, PgOrg):
         cur.execute("ROLLBACK TO SAVEPOINT test_start")
         cur.close()
 
+    def reset_schema(self):
+        """DROP toutes les tables du schéma — repartir d'une org neuve
+        (les types de colonnes inférés des runs précédents ne collent plus)."""
+        try:
+            self.conn.rollback()
+        except Exception:
+            pass
+        old_autocommit = self.conn.autocommit
+        try:
+            self.conn.autocommit = True
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT tablename FROM pg_tables WHERE schemaname = %s",
+                [self.schema_name])
+            tables = [r[0] for r in cur.fetchall()]
+            for t in tables:
+                cur.execute("DROP TABLE IF EXISTS {}.{} CASCADE".format(
+                    self.schema_name, t))
+            cur.close()
+        finally:
+            self.conn.autocommit = old_autocommit
+        self._tables = {}
+        self._dirty_tables = set()
+        self._created_tables = set()
+        self._id_counters = {}
+
     def truncate_schema(self):
         """Vide TOUTES les tables connues du schéma — isolation de test à la
         Salesforce (seeAllData=false) : chaque test démarre sur une org vide,
@@ -173,15 +199,34 @@ class PgTestOrg(TriggerMixin, PgOrg):
     # --- DML ---
 
     def _auto_create_table(self, sobject: str, records: list):
-        """Crée automatiquement la table si elle n'existe pas (toutes colonnes TEXT)."""
+        """Crée automatiquement la table si elle n'existe pas. Le type de
+        chaque colonne est inféré de la première valeur non-nulle rencontrée
+        (sinon TEXT) pour préserver les types au round-trip SOQL."""
         table = sobject.lower()
         if table in self._tables:
             return
         # Tout SObject Salesforce a un champ Name (auto-number à défaut)
         cols = {"name": "TEXT"}
-        cols.update({sf_to_pg_column(k): "TEXT" for r in records for k in r.keys()
-                     if k != "Id" and not k.startswith("_")})
+        for r in records:
+            for k, v in r.items():
+                if k == "Id" or k.startswith("_"):
+                    continue
+                col = sf_to_pg_column(k)
+                if cols.get(col, "TEXT") == "TEXT" and v is not None:
+                    cols[col] = self._infer_pg_type(v)
+                else:
+                    cols.setdefault(col, "TEXT")
         self.create_sobject(sobject, {k: v for k, v in cols.items()})
+
+    @staticmethod
+    def _infer_pg_type(value) -> str:
+        if isinstance(value, bool):
+            return "BOOLEAN"
+        if isinstance(value, int):
+            return "BIGINT"
+        if isinstance(value, float):
+            return "DOUBLE PRECISION"
+        return "TEXT"
 
     def _execute(self, cq):
         """Comme PgOrg._execute, avec la sémantique Salesforce des schémas :

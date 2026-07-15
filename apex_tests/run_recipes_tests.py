@@ -102,8 +102,10 @@ def extract_test_methods(source):
                     break
         elif stripped.lower().startswith("@istest") and "(" not in stripped.split("//")[0].replace("@isTest", "", 1)[:1]:
             for j in range(i + 1, min(i + 5, len(lines))):
+                if re.search(r'\bclass\b', lines[j]):
+                    break  # @isTest de la CLASSE — pas une méthode
                 m = re.search(r'(?:static\s+)?(?:void|String)\s+(\w+)\s*\(', lines[j])
-                if m and "class" not in lines[j]:
+                if m:
                     methods.append(m.group(1))
                     break
         elif "testmethod" in stripped.lower():
@@ -148,6 +150,37 @@ def load_test_files():
     return tests, helpers
 
 
+PERMSETS_DIR = os.path.join(RECIPES_ROOT, "force-app", "main", "default", "permissionsets")
+
+
+def seed_standard_data(org):
+    """Données standard présentes dans toute org : profils (pour
+    TestFactory.createMinAccessUser / createTestUser + System.runAs) et
+    permission sets du projet (requêtés par Name puis assignés)."""
+    try:
+        org.insert("Profile", [
+            {"Name": "System Administrator"},
+            {"Name": "Standard User"},
+            {"Name": "Minimum Access - Salesforce"},
+        ])
+    except Exception:
+        pass
+    try:
+        from emusf.sfdx_loader import parse_permission_set
+        if not hasattr(org, "permset_grants"):
+            org.permset_grants = {}
+            for f in sorted(os.listdir(PERMSETS_DIR)):
+                if f.endswith(".permissionset-meta.xml"):
+                    name = f[:-len(".permissionset-meta.xml")]
+                    org.permset_grants[name.lower()] = parse_permission_set(
+                        os.path.join(PERMSETS_DIR, f))
+        names = sorted(org.permset_grants)
+        if names:
+            org.insert("PermissionSet", [{"Name": n, "Label": n} for n in names])
+    except Exception:
+        pass
+
+
 def run_test_class(test_class_name, test_source, all_classes, parser, org):
     test_methods, setup_method = extract_test_methods(test_source)
     if not test_methods:
@@ -164,6 +197,7 @@ def run_test_class(test_class_name, test_source, all_classes, parser, org):
 
     for method_name in test_methods:
         org.truncate_schema()
+        seed_standard_data(org)
 
         interp = RecipesTestInterpreter(org)
 
@@ -186,13 +220,16 @@ def run_test_class(test_class_name, test_source, all_classes, parser, org):
         # Jette le stdout des tests (System.debug peut être très verbeux)
         stdout_ctx = contextlib.redirect_stdout(DiscardIO())
         stdout_ctx.__enter__()
+        setup_error = None
         try:
             if setup_method:
                 try:
                     setup_ast = parser.parse_class(test_source, setup_method)
                     interp._exec_block(setup_ast)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # En vrai Salesforce, un @testSetup qui échoue fait échouer
+                    # tous les tests — remonter l'erreur au lieu de l'avaler
+                    setup_error = "{}: {}".format(type(e).__name__, str(e)[:150])
 
             for cls_name, cls in list(interp.classes.items()):
                 if getattr(cls, "static_init", None):
@@ -205,6 +242,16 @@ def run_test_class(test_class_name, test_source, all_classes, parser, org):
                         pass
                     finally:
                         interp._current_class = prev_cls
+
+            if setup_error is not None:
+                results[method_name] = {
+                    "status": "ERROR",
+                    "passed": 0,
+                    "failed": 0,
+                    "failures": [],
+                    "error": "SETUP: " + setup_error,
+                }
+                continue
 
             ast = parser.parse_class(test_source, method_name)
             interp._exec_block(ast)
@@ -299,9 +346,15 @@ if __name__ == "__main__":
 
     # Org partagée + métadonnées SFDX + triggers
     org = PgTestOrg(DSN, schema="test")
+    org.reset_schema()  # les types de colonnes sont inférés — repartir à neuf
     sfdx_objects = [d for d in os.listdir(OBJECTS_DIR)
                     if os.path.isdir(os.path.join(OBJECTS_DIR, d))]
     configure_pg_org(org, OBJECTS_DIR, sfdx_objects)
+    # Relations standard (absentes des métadonnées SFDX du projet)
+    org.register_relationship("Contacts", "Contact", "AccountId", "Account")
+    org.register_relationship("Opportunities", "Opportunity", "AccountId", "Account")
+    org.register_relationship("Cases", "Case", "AccountId", "Account")
+    org.register_relationship("Tasks", "Task", "WhatId", "Account")
     if os.path.isdir(TRIGGERS_DIR):
         for path in sorted(glob.glob(os.path.join(TRIGGERS_DIR, "*.trigger"))):
             try:

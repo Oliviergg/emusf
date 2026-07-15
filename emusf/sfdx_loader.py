@@ -120,6 +120,32 @@ def configure_pg_org(org, objects_dir: str, sobject_names: list, verbose: bool =
     return all_validation_rules
 
 
+def parse_permission_set(path: str) -> dict:
+    """Parse un .permissionset-meta.xml → grants normalisés (clés lowercase) :
+    {'objects': {'campaign': {'read': True, 'create': …, 'edit': …, 'delete': …}},
+     'fields': {'campaign.actualcost': {'read': True, 'edit': False}}}"""
+    tree = ET.parse(path)
+    root = tree.getroot()
+    grants = {"objects": {}, "fields": {}}
+    for op in root.findall(_tag("objectPermissions")):
+        obj = (_text(op, "object") or "").lower()
+        if obj:
+            grants["objects"][obj] = {
+                "read": _text(op, "allowRead") == "true",
+                "create": _text(op, "allowCreate") == "true",
+                "edit": _text(op, "allowEdit") == "true",
+                "delete": _text(op, "allowDelete") == "true",
+            }
+    for fp in root.findall(_tag("fieldPermissions")):
+        field = (_text(fp, "field") or "").lower()
+        if field:
+            grants["fields"][field] = {
+                "read": _text(fp, "readable") == "true",
+                "edit": _text(fp, "editable") == "true",
+            }
+    return grants
+
+
 def _text(root, tag_name: str) -> Optional[str]:
     el = root.find(_tag(tag_name))
     if el is not None and el.text:

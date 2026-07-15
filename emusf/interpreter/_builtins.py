@@ -44,7 +44,7 @@ class BuiltinsMixin:
                 and call.obj not in self._BUILTIN_NAMESPACES.values()):
             call = MethodCall(obj=self._BUILTIN_NAMESPACES[call.obj.lower()],
                               method=call.method, args=call.args)
-        args = [self._eval(a) for a in call.args]
+        args = [self._eval_arg(a) for a in call.args]
         method = call.method
         meth = method.lower()
 
@@ -93,6 +93,12 @@ class BuiltinsMixin:
             if meth == "getsobjecttype":
                 return ApexToken({"_type": "SObjectType",
                                   "name": self._guess_sobject_type(obj) or "SObject"})
+            if meth == "getsobjects":
+                # Enfants d'une sous-requête : acct.getSObjects('Contacts')
+                if args:
+                    key = _ci_key(obj, str(args[0]))
+                    return obj.get(key) if key else None
+                return None
             if meth == "getpopulatedfieldsasmap":
                 return {k: v for k, v in obj.items() if not k.startswith("_")}
             if meth == "clone":
@@ -111,11 +117,14 @@ class BuiltinsMixin:
             if meth == "containskey":
                 return args[0] in obj if args else False
             if meth == "keyset":
-                return set(k for k in obj.keys() if not k.startswith("_"))
+                return set(k for k in obj.keys()
+                           if not (isinstance(k, str) and k.startswith("_")))
             if meth == "values":
-                return [v for k, v in obj.items() if not k.startswith("_")]
+                return [v for k, v in obj.items()
+                        if not (isinstance(k, str) and k.startswith("_"))]
             if meth == "size":
-                return len([k for k in obj if not k.startswith("_")])
+                return len([k for k in obj
+                            if not (isinstance(k, str) and k.startswith("_"))])
             if meth == "isempty":
                 return len(obj) == 0
             if meth == "remove":
@@ -255,6 +264,7 @@ class BuiltinsMixin:
         "Decimal": "_ns_decimal",
         "Double": "_ns_double",
         "Assert": "_ns_assert",
+        "Security": "_ns_security",
     }
 
     def _invoke_stub(self, stub, method, args):
@@ -401,9 +411,26 @@ class BuiltinsMixin:
         elif meth == "serializepretty":
             return _json.dumps(_json_clean(args[0]), indent=2, default=_default) if args else "null"
         elif meth == "deserialize":
-            if len(args) >= 2 and isinstance(args[0], str):
-                return self._json_convert_dates(_json.loads(args[0]))
-            return self._json_convert_dates(_json.loads(args[0])) if args else None
+            if not args or args[0] is None:
+                return None
+            result = self._json_convert_dates(_json.loads(args[0]))
+            # JSON.deserialize(str, Account.class) : marquer le type SObject
+            # (nécessaire à stripInaccessible, getSObjectType, DML…)
+            type_name = args[1] if len(args) >= 2 else None
+            if isinstance(type_name, str):
+                base = type_name.split("<")[-1].rstrip(">") if "<" in type_name else type_name
+                if base and (base.endswith("__c") or base[:1].isupper()) \
+                        and base.lower() not in ("object", "string", "integer", "decimal", "boolean") \
+                        and self._resolve_class(base) is None:
+                    def _stamp(v):
+                        if isinstance(v, dict) and "_sobject_type" not in v:
+                            v["_sobject_type"] = base
+                    if isinstance(result, list):
+                        for item in result:
+                            _stamp(item)
+                    else:
+                        _stamp(result)
+            return result
         elif meth == "deserializeuntyped":
             return _json.loads(args[0]) if args and isinstance(args[0], str) else None
         return _UNHANDLED
@@ -783,6 +810,18 @@ class BuiltinsMixin:
 
     def _ns_userinfo(self, method, args):
         meth = method.lower()
+        # System.runAs : refléter le user courant
+        u = self._current_user
+        if isinstance(u, dict):
+            _current = {
+                "getuserid": u.get("Id") or u.get("id"),
+                "getusername": u.get("Username") or u.get("username"),
+                "getuseremail": u.get("Email") or u.get("email"),
+                "getname": u.get("LastName") or u.get("lastname"),
+                "getprofileid": u.get("ProfileId") or u.get("profileid"),
+            }
+            if meth in _current and _current[meth] is not None:
+                return _current[meth]
         # UserInfo static methods
         _userinfo = {
             "getuserid": "005000000000001AAA",
@@ -858,9 +897,12 @@ class BuiltinsMixin:
         if meth == "describesobjects":
             return [ApexToken({"_type": "DescribeSObjectResult", "name": a,
                                "label": a, "isCustom": str(a).endswith("__c"),
-                               "isAccessible": True, "isCreateable": True,
-                               "isUpdateable": True, "isDeletable": True,
-                               "isQueryable": True, "isSearchable": True,
+                               "isAccessible": self._describe_access(a),
+                               "isCreateable": self._describe_access(a, op="create"),
+                               "isUpdateable": self._describe_access(a, op="edit"),
+                               "isDeletable": self._describe_access(a, op="delete"),
+                               "isQueryable": self._describe_access(a),
+                               "isSearchable": self._describe_access(a),
                                "fields": {"_type": "FieldMap", "_sobject": a}})
                     for a in (args[0] if args and isinstance(args[0], list) else [])]
         return _UNHANDLED
@@ -948,6 +990,58 @@ class BuiltinsMixin:
         if meth == "fail":
             msg = args[0] if args else "Assertion failed"
             raise AssertException(msg)
+        return _UNHANDLED
+
+    def _ns_security(self, method, args):
+        meth = method.lower()
+        if meth == "stripinaccessible":
+            # Security.stripInaccessible(AccessType.X, records[, enforceRootObjectCRUD])
+            access_type = str(args[0] or "READABLE").upper() if args else "READABLE"
+            field_op = "read" if access_type == "READABLE" else "edit"
+            obj_op = {"READABLE": "read", "CREATABLE": "create",
+                      "UPDATABLE": "edit", "UPSERTABLE": "edit"}.get(access_type, "read")
+            records = args[1] if len(args) > 1 else []
+            recs = records if isinstance(records, list) else [records]
+            enforce_crud = bool(args[2]) if len(args) > 2 else True
+            removed = {}
+            kept = []
+            for r in recs:
+                if not isinstance(r, dict):
+                    kept.append(r)
+                    continue
+                sobj = self._guess_sobject_type(r) or "SObject"
+                if enforce_crud and not self._describe_access(sobj, op=obj_op):
+                    raise ApexException(
+                        "No access to entity: {}".format(sobj))
+                stripped = {}
+                for k, v in r.items():
+                    if isinstance(v, list) and v and all(
+                            isinstance(x, dict) for x in v):
+                        # Enfants de sous-requête : strip récursif par objet
+                        child_sobj = self._guess_sobject_type(v[0]) or k
+                        if self._describe_access(child_sobj, op="read"):
+                            children = []
+                            for child in v:
+                                ckept = {}
+                                for ck, cv in child.items():
+                                    if (ck.startswith("_") or ck in ("Id", "id")
+                                            or self._describe_access(child_sobj, ck, field_op)):
+                                        ckept[ck] = cv
+                                    else:
+                                        removed.setdefault(child_sobj, set()).add(ck)
+                                children.append(ckept)
+                            stripped[k] = children
+                        else:
+                            removed.setdefault(sobj, set()).add(k)
+                        continue
+                    if (k.startswith("_") or k in ("Id", "id")
+                            or self._describe_access(sobj, k, field_op)):
+                        stripped[k] = v
+                    else:
+                        removed.setdefault(sobj, set()).add(k)
+                kept.append(stripped)
+            return {"_type": "SObjectAccessDecision",
+                    "_records": kept, "_removed": removed}
         return _UNHANDLED
 
     def _ns_custom_setting(self, call, method, args):

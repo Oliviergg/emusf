@@ -235,6 +235,9 @@ class ValuesMixin:
             "remove": lambda: lst.pop(int(args[0])),
             "clear": lambda: lst.clear(),
             "sort": lambda: self._sort_list(lst, args),
+            "getsobjecttype": lambda: ApexToken({
+                "_type": "SObjectType",
+                "name": (self._guess_sobject_type(lst[0]) if lst and isinstance(lst[0], dict) else None) or "SObject"}),
         }
         if meth in methods:
             return methods[meth]()
@@ -333,6 +336,7 @@ class ValuesMixin:
         # Schema.sObjectType.X → DescribeSObjectResult (token Apex) ; permet
         # Schema.sObjectType.Lead.isAccessible() et .fields
         if m.get("_type") == "SchemaSObjectTypeMap":
+            acc = self._describe_access(method)
             return {
                 "_type": "DescribeSObjectResult",
                 "name": method,
@@ -340,18 +344,20 @@ class ValuesMixin:
                 "labelPlural": method + "s",
                 "keyPrefix": method[:3].lower(),
                 "isCustom": method.endswith("__c"),
-                "isAccessible": True,
-                "isCreateable": True,
-                "isUpdateable": True,
-                "isDeletable": True,
-                "isQueryable": True,
-                "isSearchable": True,
+                "isAccessible": acc,
+                "isCreateable": self._describe_access(method, op="create"),
+                "isUpdateable": self._describe_access(method, op="edit"),
+                "isDeletable": self._describe_access(method, op="delete"),
+                "isQueryable": acc,
+                "isSearchable": acc,
+                "fields": {"_type": "FieldMap", "_sobject": method},
             }
 
         # SObjectType object (Schema describe)
         if m.get("_type") == "SObjectType":
             sobj_name = m.get("name", "")
             if meth == "getdescribe":
+                acc = self._describe_access(sobj_name)
                 return ApexToken({
                     "_type": "DescribeSObjectResult",
                     "name": sobj_name,
@@ -359,12 +365,13 @@ class ValuesMixin:
                     "labelPlural": sobj_name + "s",
                     "keyPrefix": sobj_name[:3].lower(),
                     "isCustom": sobj_name.endswith("__c"),
-                    "isAccessible": True,
-                    "isCreateable": True,
-                    "isUpdateable": True,
-                    "isDeletable": True,
-                    "isQueryable": True,
-                    "isSearchable": True,
+                    "isAccessible": acc,
+                    "isCreateable": self._describe_access(sobj_name, op="create"),
+                    "isUpdateable": self._describe_access(sobj_name, op="edit"),
+                    "isDeletable": self._describe_access(sobj_name, op="delete"),
+                    "isQueryable": acc,
+                    "isSearchable": acc,
+                    "isUndeletable": acc,
                     "fields": {"_type": "FieldMap", "_sobject": sobj_name},
                 })
             if meth == "newsobject":
@@ -387,13 +394,14 @@ class ValuesMixin:
         if m.get("_type") == "SObjectField":
             if meth == "getdescribe":
                 fname = m.get("name", "")
+                fsobj = m.get("_sobject") or ""
                 return ApexToken({
                     "_type": "DescribeFieldResult",
                     "name": fname,
                     "label": fname,
-                    "isAccessible": True,
-                    "isCreateable": True,
-                    "isUpdateable": True,
+                    "isAccessible": self._describe_access(fsobj, fname, "read"),
+                    "isCreateable": self._describe_access(fsobj, fname, "edit"),
+                    "isUpdateable": self._describe_access(fsobj, fname, "edit"),
                     "isFilterable": True,
                     "isNillable": True,
                 })
@@ -488,6 +496,13 @@ class ValuesMixin:
         if m.get("_type") == "QueueableContext":
             if meth == "getjobid":
                 return m.get("jobId")
+
+        # SObjectAccessDecision (Security.stripInaccessible)
+        if m.get("_type") == "SObjectAccessDecision":
+            if meth == "getrecords":
+                return m.get("_records") or []
+            if meth == "getremovedfields":
+                return m.get("_removed") or {}
 
         # BatchableContext (Database.executeBatch)
         if m.get("_type") == "BatchableContext":
