@@ -122,6 +122,9 @@ class ValuesMixin:
             "normalizespace": lambda: " ".join(s.split()),
             "countmatches": lambda: s.count(args[0]) if args else 0,
             "size": lambda: len(s),
+            "tostring": lambda: s,
+            # Les valeurs d'enum sont des chaînes : AES256.name() / .ordinal()
+            "name": lambda: s,
             # --- Nouveaux : recherche & comparaison ---
             "containsignorecase": lambda: args[0].lower() in s.lower() if args and isinstance(args[0], str) else False,
             "startswithignorecase": lambda: s.lower().startswith(args[0].lower()) if args and isinstance(args[0], str) else False,
@@ -496,6 +499,26 @@ class ValuesMixin:
         if m.get("_type") == "QueueableContext":
             if meth == "getjobid":
                 return m.get("jobId")
+
+        # Résultats DML (Database.insert/update/upsert/delete/undelete)
+        if m.get("_type") in ("SaveResult", "UpsertResult", "DeleteResult", "UndeleteResult"):
+            if meth == "issuccess":
+                return bool(m.get("success"))
+            if meth == "getid":
+                return m.get("id")
+            if meth == "geterrors":
+                return m.get("errors") or []
+            if meth == "iscreated":
+                return bool(m.get("created"))
+
+        # Database.Error (élément de getErrors())
+        if m.get("_type") == "Database.Error":
+            if meth == "getmessage":
+                return m.get("message")
+            if meth == "getstatuscode":
+                return m.get("statusCode")
+            if meth == "getfields":
+                return m.get("fields") or []
 
         # SObjectAccessDecision (Security.stripInaccessible)
         if m.get("_type") == "SObjectAccessDecision":

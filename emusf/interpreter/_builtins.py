@@ -592,35 +592,81 @@ class BuiltinsMixin:
         # Database static methods
         if meth in ("insert", "update"):
             records = args[0] if args else None
-            if isinstance(records, list):
-                for r in records:
-                    if isinstance(r, dict) and "_sobject_type" in r:
-                        sobject = r["_sobject_type"]
-                        data = {k: v for k, v in r.items() if k != "_sobject_type"}
-                        try:
-                            if meth == "insert":
-                                result = self.org.insert(sobject, [data])
-                                r["Id"] = result.record_ids[0]
-                            else:
-                                self.org.update(sobject, [data])
-                        except Exception:
-                            pass  # Partial success mode
-                # Return list of SaveResult
-                return [{"_type": "SaveResult", "success": True, "id": r.get("Id")} for r in records]
-            elif isinstance(records, dict) and "_sobject_type" in records:
-                sobject = records["_sobject_type"]
-                data = {k: v for k, v in records.items() if k != "_sobject_type"}
-                if meth == "insert":
-                    result = self.org.insert(sobject, [data])
-                    records["Id"] = result.record_ids[0]
-                else:
-                    self.org.update(sobject, [data])
-                return {"_type": "SaveResult", "success": True, "id": records.get("Id")}
-            return None
+            # allOrNone : 2e argument (défaut true). AccessLevel éventuel ignoré.
+            all_or_none = True
+            if len(args) > 1 and isinstance(args[1], bool):
+                all_or_none = args[1]
+            single = isinstance(records, dict)
+            recs = [records] if single else (records or [])
+            results = []
+            if meth == "insert" and all_or_none:
+                # Atomicité : valider TOUS les records avant d'insérer le premier
+                validate = getattr(self.org, "_validate_required", None)
+                if validate is not None:
+                    for r in recs:
+                        if isinstance(r, dict) and "_sobject_type" in r:
+                            try:
+                                validate(r["_sobject_type"],
+                                         [{k: v for k, v in r.items() if k != "_sobject_type"}])
+                            except Exception as e:
+                                raise ApexException(
+                                    "Insert failed. First exception on row 0; "
+                                    "first error: {}".format(str(e)[:200]))
+            for r in recs:
+                if not (isinstance(r, dict) and "_sobject_type" in r):
+                    results.append({"_type": "SaveResult", "success": False, "id": None,
+                                    "errors": [{"_type": "Database.Error",
+                                                "message": "invalid record",
+                                                "statusCode": "INVALID_TYPE"}]})
+                    continue
+                sobject = r["_sobject_type"]
+                data = {k: v for k, v in r.items() if k != "_sobject_type"}
+                try:
+                    if meth == "insert":
+                        result = self.org.insert(sobject, [data])
+                        r["Id"] = result.record_ids[0]
+                    else:
+                        self.org.update(sobject, [data])
+                    results.append({"_type": "SaveResult", "success": True,
+                                    "id": r.get("Id"), "errors": []})
+                except Exception as e:
+                    if all_or_none:
+                        raise ApexException(
+                            "Insert failed. First exception on row 0; "
+                            "first error: {}".format(str(e)[:200]))
+                    results.append({"_type": "SaveResult", "success": False, "id": None,
+                                    "errors": [{"_type": "Database.Error",
+                                                "message": str(e)[:200],
+                                                "statusCode": "FIELD_INTEGRITY_EXCEPTION"}]})
+            return results[0] if single and results else results
         if meth == "delete":
             records = args[0] if args else None
-            # Simplified — just return success
-            return [{"_type": "SaveResult", "success": True}]
+            all_or_none = True
+            if len(args) > 1 and isinstance(args[1], bool):
+                all_or_none = args[1]
+            single = isinstance(records, (dict, str))
+            recs = [records] if single else (records or [])
+            results = []
+            for r in recs:
+                rid = r.get("Id") if isinstance(r, dict) else r
+                sobject = (r.get("_sobject_type") if isinstance(r, dict) else None) \
+                    or self._guess_sobject_type(r if isinstance(r, dict) else {"Id": rid})
+                try:
+                    if not rid or not sobject:
+                        raise ApexException("MISSING_ARGUMENT, Id not specified")
+                    self.org.delete(sobject, [rid])
+                    results.append({"_type": "DeleteResult", "success": True,
+                                    "id": rid, "errors": []})
+                except Exception as e:
+                    if all_or_none:
+                        raise ApexException(
+                            "Delete failed. First exception on row 0; "
+                            "first error: {}".format(str(e)[:200]))
+                    results.append({"_type": "DeleteResult", "success": False, "id": rid,
+                                    "errors": [{"_type": "Database.Error",
+                                                "message": str(e)[:200],
+                                                "statusCode": "ENTITY_IS_DELETED"}]})
+            return results[0] if single and results else results
         if meth == "query":
             soql = args[0] if args else ""
             return self.org.execute_soql("[{}]".format(soql), context=self._soql_context())
@@ -640,6 +686,9 @@ class BuiltinsMixin:
             return {"_type": "QueryLocator", "_rows": rows or [], "_soql": soql}
         if meth == "upsert":
             records = args[0] if args else None
+            all_or_none = True
+            if len(args) > 1 and isinstance(args[1], bool):
+                all_or_none = args[1]
             single = isinstance(records, dict)
             recs = [records] if single else (records or [])
             results = []
@@ -648,16 +697,34 @@ class BuiltinsMixin:
                     sobject = r["_sobject_type"]
                     data = {k: v for k, v in r.items() if k != "_sobject_type"}
                     try:
+                        created = not r.get("Id")
                         if r.get("Id"):
                             self.org.update(sobject, [data])
                         else:
                             result = self.org.insert(sobject, [data])
                             r["Id"] = result.record_ids[0]
                         results.append({"_type": "UpsertResult", "success": True,
-                                        "id": r.get("Id"), "created": True})
-                    except Exception:
+                                        "id": r.get("Id"), "created": created,
+                                        "errors": []})
+                    except Exception as e:
+                        if all_or_none:
+                            raise ApexException(
+                                "Upsert failed. First exception on row 0; "
+                                "first error: {}".format(str(e)[:200]))
                         results.append({"_type": "UpsertResult", "success": False,
-                                        "id": None, "created": False})
+                                        "id": None, "created": False,
+                                        "errors": [{"_type": "Database.Error",
+                                                    "message": str(e)[:200],
+                                                    "statusCode": "FIELD_INTEGRITY_EXCEPTION"}]})
+            return results[0] if single and results else results
+        if meth == "undelete":
+            records = args[0] if args else None
+            single = isinstance(records, (dict, str))
+            recs = [records] if single else (records or [])
+            ids = [r.get("Id") if isinstance(r, dict) else r for r in recs]
+            self.org.undelete([i for i in ids if i])
+            results = [{"_type": "UndeleteResult", "success": True, "id": i,
+                        "errors": []} for i in ids]
             return results[0] if single and results else results
         if meth == "executebatch":
             scope_size = int(args[1]) if len(args) > 1 and args[1] is not None else 200
@@ -701,7 +768,13 @@ class BuiltinsMixin:
             return urllib.parse.quote(str(args[0]), safe='') if args else ""
         if meth == "base64decode":
             import base64
-            return base64.b64decode(str(args[0])).decode() if args else ""
+            if not args:
+                return {"_type": "Blob", "_data": b""}
+            # Retourne un Blob (comme Apex) — .toString() donne le texte
+            return {"_type": "Blob", "_data": base64.b64decode(str(args[0]))}
+        if meth == "urldecode":
+            import urllib.parse
+            return urllib.parse.unquote(str(args[0])) if args else ""
         if meth == "converttohex":
             return _blob_bytes(args[0]).hex() if args else ""
         if meth == "convertfromhex":
@@ -738,16 +811,84 @@ class BuiltinsMixin:
             algo = str(args[0]).lower().replace("-", "") if args else "hmacsha256"
             data = _blob_bytes(args[1]) if len(args) > 1 else b""
             key = _blob_bytes(args[2]) if len(args) > 2 else b""
-            hash_map = {"hmacsha256": hashlib.sha256, "hmacsha1": hashlib.sha1, "hmacmd5": hashlib.md5}
+            hash_map = {"hmacsha256": hashlib.sha256, "hmacsha1": hashlib.sha1, "hmacmd5": hashlib.md5,
+                        "hmacsha384": hashlib.sha384, "hmacsha512": hashlib.sha512}
             hash_fn = hash_map.get(algo, hashlib.sha256)
             return {"_type": "Blob", "_data": hmac.new(key, data, hash_fn).digest()}
         if meth == "generatedigest":
             import hashlib
             algo = str(args[0]).lower().replace("-", "") if args else "sha256"
             data = _blob_bytes(args[1]) if len(args) > 1 else b""
-            hash_map = {"sha256": hashlib.sha256, "sha1": hashlib.sha1, "md5": hashlib.md5}
+            hash_map = {"sha256": hashlib.sha256, "sha1": hashlib.sha1, "md5": hashlib.md5,
+                        "sha384": hashlib.sha384, "sha512": hashlib.sha512}
             hash_fn = hash_map.get(algo, hashlib.sha256)
             return {"_type": "Blob", "_data": hash_fn(data).digest()}
+        if meth == "decrypt":
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            key = _blob_bytes(args[1]) if len(args) > 1 else b""
+            iv = _blob_bytes(args[2]) if len(args) > 2 else b""
+            data = _blob_bytes(args[3]) if len(args) > 3 else b""
+            decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+            plain = decryptor.update(data) + decryptor.finalize()
+            if plain:
+                plain = plain[:-plain[-1]]  # retirer le padding PKCS7
+            return {"_type": "Blob", "_data": plain}
+        if meth == "encryptwithmanagediv":
+            import os as _os
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            key = _blob_bytes(args[1]) if len(args) > 1 else b""
+            data = _blob_bytes(args[2]) if len(args) > 2 else b""
+            iv = _os.urandom(16)
+            pad_len = 16 - (len(data) % 16)
+            data = data + bytes([pad_len]) * pad_len
+            encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+            # Comme Apex : l'IV est préfixé au cipher text
+            return {"_type": "Blob",
+                    "_data": iv + encryptor.update(data) + encryptor.finalize()}
+        if meth == "decryptwithmanagediv":
+            from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+            key = _blob_bytes(args[1]) if len(args) > 1 else b""
+            payload = _blob_bytes(args[2]) if len(args) > 2 else b""
+            iv, data = payload[:16], payload[16:]
+            decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+            plain = decryptor.update(data) + decryptor.finalize()
+            if plain:
+                plain = plain[:-plain[-1]]
+            return {"_type": "Blob", "_data": plain}
+        if meth == "verifyhmac":
+            import hmac, hashlib
+            algo = str(args[0]).lower().replace("-", "") if args else "hmacsha256"
+            data = _blob_bytes(args[1]) if len(args) > 1 else b""
+            key = _blob_bytes(args[2]) if len(args) > 2 else b""
+            expected = _blob_bytes(args[3]) if len(args) > 3 else b""
+            hash_map = {"hmacsha256": hashlib.sha256, "hmacsha1": hashlib.sha1,
+                        "hmacsha384": hashlib.sha384, "hmacsha512": hashlib.sha512}
+            hash_fn = hash_map.get(algo, hashlib.sha256)
+            return hmac.compare_digest(hmac.new(key, data, hash_fn).digest(), expected)
+        if meth in ("sign", "verify"):
+            from cryptography.hazmat.primitives import hashes, serialization
+            from cryptography.hazmat.primitives.asymmetric import padding as _pad
+            algo = str(args[0]).lower() if args else "rsa-sha256"
+            hash_map = {"rsa-sha1": hashes.SHA1, "rsa-sha256": hashes.SHA256,
+                        "rsa-sha384": hashes.SHA384, "rsa-sha512": hashes.SHA512,
+                        "rsa": hashes.SHA1}
+            hash_cls = hash_map.get(algo, hashes.SHA256)
+            if meth == "sign":
+                data = _blob_bytes(args[1]) if len(args) > 1 else b""
+                key_der = _blob_bytes(args[2]) if len(args) > 2 else b""
+                private_key = serialization.load_der_private_key(key_der, password=None)
+                sig = private_key.sign(data, _pad.PKCS1v15(), hash_cls())
+                return {"_type": "Blob", "_data": sig}
+            # verify(algo, data, signature, publicKey)
+            data = _blob_bytes(args[1]) if len(args) > 1 else b""
+            signature = _blob_bytes(args[2]) if len(args) > 2 else b""
+            key_der = _blob_bytes(args[3]) if len(args) > 3 else b""
+            public_key = serialization.load_der_public_key(key_der)
+            try:
+                public_key.verify(signature, data, _pad.PKCS1v15(), hash_cls())
+                return True
+            except Exception:
+                return False
         return _UNHANDLED
 
     def _ns_date(self, method, args):

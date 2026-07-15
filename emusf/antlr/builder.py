@@ -33,7 +33,7 @@ from ..ast_nodes import (
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
     ForCStyle, WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt,
-    Increment, Decrement, SwitchWhen, RunAs,
+    Increment, Decrement, SwitchWhen, RunAs, DmlUpsert, DmlUndelete,
     MethodDef, ClassDef,
 )
 
@@ -367,6 +367,10 @@ class _Builder:
             return self._dml(ctx.updateStatement().expression(), DmlUpdate)
         if ctx.deleteStatement() is not None:
             return self._dml(ctx.deleteStatement().expression(), DmlDelete)
+        if ctx.upsertStatement() is not None:
+            return self._dml(ctx.upsertStatement().expression(), DmlUpsert)
+        if ctx.undeleteStatement() is not None:
+            return self._dml(ctx.undeleteStatement().expression(), DmlUndelete)
         if ctx.localVariableDeclarationStatement() is not None:
             return self._local_decl(
                 ctx.localVariableDeclarationStatement().localVariableDeclaration())

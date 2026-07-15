@@ -11,13 +11,14 @@ from ..ast_nodes import (
     DmlInsert, DmlUpdate, DmlDelete,
     SystemDebug, ForEach, IfElse, Return, MethodCallStmt, TryCatch, Block,
     ForCStyle, WhileLoop, DoWhile, ThrowStmt, BreakStmt, ContinueStmt, Increment, Decrement,
-    MethodDef, ClassDef, NewSet, SwitchWhen, RunAs,
+    MethodDef, ClassDef, NewSet, SwitchWhen, RunAs, DmlUpsert, DmlUndelete,
 )
 from ._helpers import (
     ReturnException, ApexException, BreakException, ContinueException,
     format_error, _common_prefix_len, _common_prefix, _unescape_html,
     _json_clean, _apex_str, _field_of, _is_soql_literal, _blob_bytes, _ci_key, ApexToken,
 )
+from ._helpers import AssertException
 
 
 class StatementsMixin:
@@ -119,6 +120,12 @@ class StatementsMixin:
 
         elif isinstance(stmt, DmlDelete):
             self._exec_dml_delete(stmt)
+
+        elif isinstance(stmt, DmlUpsert):
+            self._exec_dml_upsert(stmt)
+
+        elif isinstance(stmt, DmlUndelete):
+            self._exec_dml_undelete(stmt)
 
         elif isinstance(stmt, SystemDebug):
             value = self._eval(stmt.expr)
@@ -294,6 +301,8 @@ class StatementsMixin:
                     self._exec_stmt(s)
             except ReturnException:
                 raise
+            except AssertException:
+                raise  # les échecs d'assertion sont incapturables (comme Apex)
             except (ApexException, Exception) as e:
                 self.variables[stmt.catch_var] = {
                     "getMessage": str(e),
@@ -383,3 +392,42 @@ class StatementsMixin:
         print("DML: DELETE {} Id={}".format(sobject, record_id))
 
     # --- Expression evaluation ---
+
+    def _exec_dml_upsert(self, stmt: DmlUpsert):
+        """upsert : update les enregistrements avec Id, insert les autres."""
+        record = self.variables.get(stmt.var_name)
+        if record is None:
+            raise Exception("Variable '{}' non définie".format(stmt.var_name))
+        records = record if isinstance(record, list) else [record]
+        if not records:
+            return
+        to_insert = [r for r in records if isinstance(r, dict) and not r.get("Id")]
+        to_update = [r for r in records if isinstance(r, dict) and r.get("Id")]
+        for group, is_insert in ((to_insert, True), (to_update, False)):
+            if not group:
+                continue
+            sobject = group[0].get("_sobject_type")
+            if not sobject:
+                raise Exception("Records sans type SObject")
+            data = [{k: v for k, v in r.items() if k != "_sobject_type"} for r in group]
+            if is_insert:
+                result = self.org.insert(sobject, data)
+                for i, r in enumerate(group):
+                    r["Id"] = result.record_ids[i]
+            else:
+                self.org.update(sobject, data)
+        print("DML: UPSERT {} ({} insert, {} update)".format(
+            records[0].get("_sobject_type"), len(to_insert), len(to_update)))
+
+    def _exec_dml_undelete(self, stmt: DmlUndelete):
+        """undelete : restaure depuis la corbeille de l'org."""
+        record = self.variables.get(stmt.var_name)
+        if record is None:
+            raise Exception("Variable '{}' non définie".format(stmt.var_name))
+        records = record if isinstance(record, list) else [record]
+        ids = [r.get("Id") if isinstance(r, dict) else r for r in records]
+        undelete = getattr(self.org, "undelete", None)
+        if undelete is None:
+            raise ApexException("undelete non supporté sur cette org")
+        undelete([i for i in ids if i])
+        print("DML: UNDELETE x{}".format(len(ids)))

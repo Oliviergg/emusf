@@ -222,6 +222,18 @@ class SwitchWhen(Stmt):
 
 
 @dataclass
+class DmlUpsert(Stmt):
+    """upsert record/records — update si Id présent, insert sinon."""
+    var_name: str
+
+
+@dataclass
+class DmlUndelete(Stmt):
+    """undelete record/records — restaure depuis la corbeille."""
+    var_name: str
+
+
+@dataclass
 class RunAs(Stmt):
     """System.runAs(user) { ... } — exécute le bloc sous un autre utilisateur."""
     user: Expr

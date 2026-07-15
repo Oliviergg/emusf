@@ -16,6 +16,11 @@ _TYPE_MAP = {
 }
 
 
+class DmlValidationError(Exception):
+    """Violation DML (champ requis, entité supprimée…) — équivalent DmlException."""
+    pass
+
+
 class PgTestOrg(TriggerMixin, PgOrg):
     """
     Org de test : INSERT/UPDATE/DELETE contre un schema PG dédié.
@@ -30,6 +35,7 @@ class PgTestOrg(TriggerMixin, PgOrg):
         self._id_counters = {}
         self._dirty_tables = set()  # Tables modified since last truncate
         self._created_tables = set()  # Tables créées dynamiquement (à DROP au cleanup)
+        self._recycle_bin = {}  # {sobject_lower: {id: row}} pour undelete
 
     # --- Schema dynamique ---
 
@@ -284,8 +290,33 @@ class PgTestOrg(TriggerMixin, PgOrg):
         cur.close()
         self._tables[table].extend(new_cols)
 
+    # Champs requis des objets standard — la validation ne s'applique que si
+    # le champ est explicitement présent et vide (nil/'') dans le record, pour
+    # rester tolérant avec les seeds qui omettent le champ.
+    REQUIRED_FIELDS = {
+        "account": ["Name"],
+        "contact": ["LastName"],
+        "lead": ["LastName", "Company"],
+        "opportunity": ["Name", "StageName", "CloseDate"],
+        "campaign": ["Name"],
+        "case": [],
+    }
+
+    def _validate_required(self, sobject: str, records: list):
+        required = self.REQUIRED_FIELDS.get(sobject.lower())
+        if not required:
+            return
+        for record in records:
+            for field in required:
+                for k, v in record.items():
+                    if k.lower() == field.lower() and (v is None or v == ""):
+                        raise DmlValidationError(
+                            "REQUIRED_FIELD_MISSING, Required fields are "
+                            "missing: [{}]".format(field))
+
     def insert(self, sobject: str, records: list) -> DmlResult:
         """Insert des enregistrements. Auto-génère les Id. Auto-crée la table si absente."""
+        self._validate_required(sobject, records)
         for record in records:
             if "Id" not in record and "id" not in record:
                 record["Id"] = self._generate_id(sobject)
@@ -373,7 +404,8 @@ class PgTestOrg(TriggerMixin, PgOrg):
                 }])
 
     def update(self, sobject: str, records: list) -> DmlResult:
-        """Update des enregistrements. Chaque record doit avoir un Id."""
+        """Update des enregistrements. Chaque record doit avoir un Id existant."""
+        self._validate_required(sobject, records)
         self._fire_triggers("before_update", sobject, records)
         self._auto_extend_table(sobject, records)
         self._dirty_tables.add(sobject.lower())
@@ -390,6 +422,11 @@ class PgTestOrg(TriggerMixin, PgOrg):
                 continue
             pg_record = {k: (str(v) if isinstance(v, (dict, list, set, bool)) else v)
                          for k, v in pg_record.items()}
+            if not record_id:
+                cur.close()
+                self.conn.rollback()
+                raise DmlValidationError(
+                    "MISSING_ARGUMENT, Id not specified in an update call")
             set_clause = ", ".join("{} = %s".format(k) for k in pg_record.keys())
             try:
                 cur.execute(
@@ -398,6 +435,13 @@ class PgTestOrg(TriggerMixin, PgOrg):
                     ),
                     list(pg_record.values()) + [record_id],
                 )
+                if cur.rowcount == 0:
+                    cur.close()
+                    self.conn.rollback()
+                    raise DmlValidationError(
+                        "INVALID_CROSS_REFERENCE_KEY, invalid cross reference id: {}".format(record_id))
+            except DmlValidationError:
+                raise
             except Exception:
                 self.conn.rollback()
         self.conn.commit()
@@ -411,23 +455,61 @@ class PgTestOrg(TriggerMixin, PgOrg):
         )
 
     def delete(self, sobject: str, record_ids: list) -> DmlResult:
-        """Delete des enregistrements par Id."""
+        """Delete des enregistrements par Id (copie en corbeille pour undelete)."""
         self._fire_triggers("before_delete", sobject, [{"Id": rid} for rid in record_ids])
         self._dirty_tables.add(sobject.lower())
 
-        cur = self.conn.cursor()
+        import psycopg2.extras as _extras
+        cur = self.conn.cursor(cursor_factory=_extras.RealDictCursor)
         for rid in record_ids:
+            try:
+                cur.execute("SELECT * FROM {}.{} WHERE id = %s".format(
+                    self.schema_name, sobject.lower()), [rid])
+                row = cur.fetchone()
+                if row:
+                    self._recycle_bin.setdefault(sobject.lower(), {})[rid] = dict(row)
+            except Exception:
+                self.conn.rollback()
             cur.execute(
                 "DELETE FROM {}.{} WHERE id = %s".format(
                     self.schema_name, sobject.lower()
                 ),
                 [rid],
             )
+            if cur.rowcount == 0:
+                cur.close()
+                self.conn.rollback()
+                raise DmlValidationError(
+                    "ENTITY_IS_DELETED, entity is deleted: {}".format(rid))
         self.conn.commit()
         cur.close()
 
         self._fire_triggers("after_delete", sobject, [{"Id": rid} for rid in record_ids])
         return DmlResult(success=True, record_ids=record_ids)
+
+    def undelete(self, record_ids: list) -> DmlResult:
+        """Restaure des enregistrements supprimés (corbeille en mémoire)."""
+        restored = []
+        for rid in record_ids:
+            for sobject, stash in self._recycle_bin.items():
+                row = stash.pop(rid, None)
+                if row is not None:
+                    cur = self.conn.cursor()
+                    cols = list(row.keys())
+                    cur.execute(
+                        "INSERT INTO {}.{} ({}) VALUES ({})".format(
+                            self.schema_name, sobject, ", ".join(cols),
+                            ", ".join(["%s"] * len(cols))),
+                        [row[c] for c in cols])
+                    cur.close()
+                    self.conn.commit()
+                    restored.append(rid)
+                    break
+        if len(restored) != len(record_ids):
+            missing = set(record_ids) - set(restored)
+            raise DmlValidationError(
+                "ENTITY_IS_DELETED, entity is deleted: {}".format(sorted(missing)))
+        return DmlResult(success=True, record_ids=restored)
 
     # --- Triggers : add_trigger/_fire_triggers hérités de TriggerMixin ---
 

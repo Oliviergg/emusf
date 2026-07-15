@@ -53,11 +53,28 @@ baseline honnête après P3 = 55/297 (18%) ; après la passe P1-P10 du 2026-07-1
    erreurs de @testSetup remontées (status SETUP: …), fix détection @isTest de classe.
    StripInaccessible 1/11→9/10, Safely 2/16→8/16, SOQLRecipes 0→6/19, CustomRestEndpoint débloqué.
 
-Reste à faire (état au run 116/313) :
+[FAIT 2026-07-15 soir] P-B DMLRecipes 40/40 + P-E Encryption 10/10 (155/313 = 49%) :
+   statements upsert/undelete (nœuds DmlUpsert/DmlUndelete, ils étaient ignorés par le builder) ;
+   corbeille en mémoire dans PgTestOrg (delete stash → undelete) ; validation des champs requis
+   standard (REQUIRED_FIELD_MISSING si champ présent mais nil/'' — tolérant si absent) ;
+   update/delete d'un Id inexistant → INVALID_CROSS_REFERENCE_KEY/ENTITY_IS_DELETED (rowcount) ;
+   Database.insert/update/delete/upsert/undelete avec vrai allOrNone (SaveResult d'échec + erreurs,
+   atomicité par pré-validation) ; SaveResult/UpsertResult/DeleteResult.isSuccess/getId/getErrors
+   + Database.Error.getMessage/getStatusCode ; AssertException incapturable par les try/catch Apex
+   (comme en vrai) ; Crypto complet (decrypt, encrypt/decryptWithManagedIV, sign/verify RSA via DER,
+   verifyHMAC, HMAC-SHA384/512) ; EncodingUtil.base64Decode retourne un Blob (il retournait une
+   chaîne décodée UTF-8, corrompant le binaire !) + urlDecode ; String.name()/toString() (enums).
+
+Reste à faire (état au run 155/313) :
 
 P-A' — reliquat sécurité : accès à un champ non requêté/strippé devrait lever SObjectException
    (les dicts rendent null) — 2-3 tests 'Negative' en dépendent ; RestContext/RestRequest pour
-   CustomRestEndpointRecipes (1/22, les 21 restants sont des sémantiques REST + QueryException).
+   CustomRestEndpointRecipes (0/22, sémantiques REST + QueryException).
+P-F — gros blocs restants par thème : AccountTriggerHandler 1/9 + TriggerHandler_Test 2/13
+   (addError bloquant, compteurs statiques de handler, tasks créées par triggers after) ;
+   Queueable* 0/4 (chaînage + finalizers) ; OrgShape 0/6 + PlatformCache* 4/13 (Cache.Session/Org) ;
+   DataWeave 0/12 (niche) ; SOSL 0/2 ; CollectionUtils 0/3 (récursions surcharges Map) ;
+   Log_Tests 0/2 (récursion Log.get singleton).
 
 P-B — DMLException/allOrNone fidèles (~12 méthodes DMLRecipes) : Database.insert(rec, false) doit
    produire des SaveResult d'échec (pas d'exception), insert d'un doublon/champ requis manquant doit
