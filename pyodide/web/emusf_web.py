@@ -109,6 +109,43 @@ def list_tree() -> str:
     return json.dumps(tree)
 
 
+_KIND_LABELS = [
+    ("Main.cls", "Point d'entrée — Main.run()"),
+    (".trigger", "Trigger"),
+    (".flow-meta.xml", "Flow"),
+    (".cls", "Classe Apex"),
+    (".md", "Documentation"),
+]
+
+
+def scenario_info(name: str) -> str:
+    """Fiche de présentation d'un scénario (JSON) : description (README.md)
+    et fichiers avec leur rôle."""
+    scenario_dir = _safe_path(os.path.join("scenarios", os.path.basename(name)))
+    description = ""
+    readme = os.path.join(scenario_dir, "README.md")
+    if os.path.isfile(readme):
+        with open(readme) as f:
+            description = f.read().strip()
+    files = []
+    for fname in sorted(os.listdir(scenario_dir)):
+        path = os.path.join(scenario_dir, fname)
+        if not os.path.isfile(path) or fname.startswith("."):
+            continue
+        kind = "Fichier"
+        for suffix, label in _KIND_LABELS:
+            if fname == suffix or fname.endswith(suffix):
+                kind = label
+                break
+        files.append({"path": "scenarios/{}/{}".format(name, fname),
+                      "name": fname, "kind": kind})
+    # Point d'entrée en premier, doc en dernier
+    files.sort(key=lambda f: (f["kind"] == "Documentation",
+                              f["name"] != "Main.cls", f["name"]))
+    return json.dumps({"name": name, "description": description,
+                       "files": files})
+
+
 def read_file(rel: str) -> str:
     with open(_safe_path(rel)) as f:
         return f.read()

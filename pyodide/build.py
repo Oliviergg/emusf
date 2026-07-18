@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -74,8 +74,6 @@ def _download_antlr_runtime(tmp: str) -> str:
 
 def build(dist: str):
     os.makedirs(dist, exist_ok=True)
-    shutil.copy2(os.path.join(HERE, "web", "index.html"),
-                 os.path.join(dist, "index.html"))
 
     bundle_path = os.path.join(dist, "emusf_bundle.zip")
     with tempfile.TemporaryDirectory() as tmp:
@@ -90,9 +88,21 @@ def build(dist: str):
                           os.path.join("scenarios", scenario))
             zf.write(os.path.join(HERE, "web", "emusf_web.py"), "emusf_web.py")
 
+    # Cache-busting : l'URL du bundle porte le hash de son contenu, injecté
+    # dans la page — sinon un navigateur peut combiner un index.html neuf
+    # avec un bundle en cache (GitHub Pages: max-age=600) et planter au boot
+    with open(bundle_path, "rb") as f:
+        build_id = hashlib.sha256(f.read()).hexdigest()[:12]
+    with open(os.path.join(HERE, "web", "index.html")) as f:
+        html = f.read()
+    html = html.replace("__EMUSF_BUILD__", build_id)
+    with open(os.path.join(dist, "index.html"), "w") as f:
+        f.write(html)
+
     size_mb = os.path.getsize(bundle_path) / 1e6
     print("OK  {}  ({:.1f} Mo)".format(bundle_path, size_mb))
-    print("OK  {}".format(os.path.join(dist, "index.html")))
+    print("OK  {}  (build {})".format(os.path.join(dist, "index.html"),
+                                      build_id))
 
 
 if __name__ == "__main__":
