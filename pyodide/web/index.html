@@ -261,6 +261,10 @@
       "https://cdn.jsdelivr.net/pyodide/v314.0.2/full/";
   if (!INDEX_URL.endsWith("/")) INDEX_URL += "/";
 
+  // Identifiant de build injecté par build.py (hash du bundle) — versionne
+  // l'URL du zip pour que page et bundle ne se désynchronisent jamais en cache
+  var BUILD = "__EMUSF_BUILD__";
+
   var terminal = document.getElementById("terminal");
   var statusEl = document.getElementById("status");
   var inputEl = document.getElementById("input");
@@ -464,7 +468,7 @@
       pyodideRef = pyodide;
       setStatus("chargement d'EMUSF…");
 
-      var resp = await fetch("emusf_bundle.zip");
+      var resp = await fetch("emusf_bundle.zip?v=" + BUILD, { cache: "no-cache" });
       if (!resp.ok) throw new Error("emusf_bundle.zip introuvable (" + resp.status + ")");
       var buf = await resp.arrayBuffer();
       pyodide.unpackArchive(buf, "zip", { extractDir: "/emusf_app" });
@@ -477,12 +481,17 @@
         'emusf_web.init()\n');
 
       mod = pyodide.pyimport("emusf_web");
+      if (typeof mod.list_tree !== "function") {
+        throw new Error("bundle EMUSF obsolète (cache navigateur) — " +
+                        "rechargez la page en forçant (⇧⌘R / Ctrl+F5)");
+      }
       buildTree(JSON.parse(mod.list_tree()));
 
       document.getElementById("loader").remove();
       document.getElementById("toolbar").hidden = false;
       document.getElementById("inputbar").hidden = false;
       setStatus("prêt — " + pyodide.version, "ready");
+      statusEl.title = "build " + BUILD;
 
       append("EMUSF REPL — " + banner, "entry-output banner");
       append("Tapez du SOQL (SELECT …) ou de l'Apex ci-dessous, ou ouvrez un fichier "
