@@ -12,6 +12,12 @@ EMUSF (Émulateur Salesforce) — a Python Apex/SOQL emulator that runs Salesfor
 # Run all pytest tests
 python3 -m pytest tests/ -v
 
+# Same without a PostgreSQL server (psycopg2→SQLite shim, used by the Pyodide page)
+PYTHONPATH=pyodide/shim python3 -m pytest tests/ --ignore=tests/test_pg_data_org.py
+
+# Build the GitHub Pages site (browser REPL via Pyodide) into pyodide/dist/
+python3 pyodide/build.py
+
 # Run a single test
 python3 -m pytest tests/test_emulator.py::test_simple_soql -v
 
@@ -54,6 +60,8 @@ python3 apex_tests/run_recipes_tests.py [pattern] [--json report.json]
 **Flows**: Salesforce Flows (`.flow-meta.xml`) are parsed by `flow_parser.py` into dataclass AST nodes (`flow_nodes.py`), then executed by `flow_interpreter.py` as a state machine. Supports assignments, decisions, loops, record CRUD, formulas, and variables.
 
 **SOQL → SQL**: Case conversion (CamelCase → lowercase), bind variable resolution (`:varName`), relationship subqueries via registered metadata in `SchemaRegistry`.
+
+**Browser REPL** (`pyodide/`): GitHub Pages site running emusf in Pyodide (WebAssembly). `pyodide/shim/psycopg2/` is a pure-Python psycopg2 emulation over stdlib `sqlite3` (translates the PG SQL emitted by PgOrg/PgTestOrg: `%s` placeholders, schemas via ATTACH, `information_schema`/`pg_tables`, TRUNCATE, ILIKE, `::boolean`). `pyodide/web/emusf_web.py` bootstraps a PgTestOrg REPL in the page; `pyodide/build.py` builds the static site; deployed by `.github/workflows/pages.yml`.
 
 **Test infrastructure**: pytest fixtures in `conftest.py` provide a `PgTestOrg` that truncates between tests. Apex-level tests use `ApexTestInterpreter` (in `test_runner.py`) which adds `System.assert()`/`System.assertEquals()`.
 

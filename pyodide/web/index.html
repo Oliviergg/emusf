@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMUSF — Émulateur Salesforce dans le navigateur</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>☁️</text></svg>">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --cyan: #58d6ff;
+    --green: #56d364;
+    --yellow: #e3b341;
+    --red: #ff7b72;
+    --accent: #1f6feb;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 14px 20px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 10px 16px;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header h1 .logo { color: var(--cyan); }
+  header .subtitle { color: var(--dim); font-size: 12px; }
+  header a { color: var(--cyan); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  #status {
+    font-size: 12px;
+    color: var(--yellow);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  #status.ready { color: var(--green); }
+  #status.error { color: var(--red); }
+  #toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel);
+    align-items: center;
+  }
+  #toolbar .label { color: var(--dim); font-size: 12px; margin-right: 4px; }
+  button.chip {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--cyan);
+    border-radius: 999px;
+    padding: 3px 12px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.chip:hover:enabled { border-color: var(--cyan); }
+  button.chip:disabled { opacity: 0.4; cursor: default; }
+  select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font: inherit;
+    font-size: 12px;
+    padding: 3px 6px;
+  }
+  #terminal {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .entry-input { color: var(--cyan); }
+  .entry-input::before { content: "apex> "; color: var(--dim); }
+  .entry-output { color: var(--text); }
+  .entry-output.error { color: var(--red); }
+  .entry-output.info { color: var(--dim); }
+  .entry-output.banner { color: var(--green); }
+  #inputbar {
+    display: flex;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    padding: 10px 20px;
+    gap: 10px;
+    align-items: center;
+  }
+  #prompt { color: var(--cyan); }
+  #input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+  }
+  #run {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #run:disabled { opacity: 0.4; cursor: default; }
+  #loader {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--dim);
+    font-size: 13px;
+  }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--cyan);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+    margin-right: 8px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="logo">EMUSF</span> — émulateur Apex/SOQL</h1>
+  <span class="subtitle">
+    Salesforce local, 100 % dans votre navigateur (Pyodide + SQLite) —
+    <a href="https://github.com/oliviergg/emusf" target="_blank" rel="noopener">GitHub</a>
+  </span>
+  <span id="status"><span class="spinner"></span>chargement de Pyodide…</span>
+</header>
+
+<div id="toolbar" hidden>
+  <span class="label">Exemples :</span>
+  <button class="chip" data-cmd="SELECT Id, Name, Famille_de_compte__c FROM Account">SOQL simple</button>
+  <button class="chip" data-cmd="SELECT Name, (SELECT LastName FROM Contacts) FROM Account WHERE Active__c = 1">Sous-requête</button>
+  <button class="chip" data-cmd="System.debug('Hello depuis Apex ' + String.valueOf(2 + 2));">System.debug</button>
+  <button class="chip" data-cmd="insert new Account(Name='Pyodide Corp', Active__c=1);">insert + trigger</button>
+  <button class="chip" data-cmd="List&lt;Account&gt; accs = [SELECT Id, Name FROM Account]; for (Account a : accs) { System.debug(a.Name); }">Boucle for</button>
+  <span class="label" style="margin-left:12px">Classe :</span>
+  <select id="classes"></select>
+  <button class="chip" id="runclass">Exécuter run()</button>
+  <button class="chip" id="reset" style="color: var(--yellow)">Reset org</button>
+</div>
+
+<div id="terminal"><div id="loader">
+  <span class="spinner"></span>Téléchargement de l'environnement Python (~15 Mo, une seule fois — ensuite en cache)…
+</div></div>
+
+<div id="inputbar" hidden>
+  <span id="prompt">apex&gt;</span>
+  <input id="input" autocomplete="off" spellcheck="false"
+         placeholder="SOQL (SELECT …) ou Apex (System.debug('hi');) — /help pour l'aide">
+  <button id="run">Exécuter</button>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Distribution Pyodide : le CDN par défaut, ou ?pyodide=<url> (tests locaux).
+  // v314 = Python 3.14, dont la stdlib inclut sqlite3 (utilisé par le shim
+  // psycopg2 d'emusf — aucune extension à télécharger en plus).
+  var params = new URLSearchParams(location.search);
+  var INDEX_URL = params.get("pyodide") ||
+      "https://cdn.jsdelivr.net/pyodide/v314.0.2/full/";
+  if (!INDEX_URL.endsWith("/")) INDEX_URL += "/";
+
+  var terminal = document.getElementById("terminal");
+  var statusEl = document.getElementById("status");
+  var inputEl = document.getElementById("input");
+  var runBtn = document.getElementById("run");
+  var history = [];
+  var historyIdx = -1;
+  var pyRunLine = null, pyRunClass = null, pyReset = null;
+
+  function setStatus(text, cls) {
+    statusEl.className = cls || "";
+    statusEl.innerHTML = (cls ? "" : '<span class="spinner"></span>') + text;
+  }
+
+  function append(text, cls) {
+    if (text === null || text === undefined || text === "") return;
+    var div = document.createElement("div");
+    div.className = cls;
+    div.textContent = text;
+    terminal.appendChild(div);
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  function execute(cmd) {
+    cmd = (cmd || "").trim();
+    if (!cmd || !pyRunLine) return;
+    append(cmd, "entry-input");
+    history.push(cmd);
+    historyIdx = history.length;
+    try {
+      var out = pyRunLine(cmd);
+      var isError = out && out.indexOf("ERREUR") === 0;
+      append(out || "(aucune sortie)", "entry-output" + (isError ? " error" : ""));
+    } catch (e) {
+      append(String(e), "entry-output error");
+    }
+    inputEl.value = "";
+    inputEl.focus();
+  }
+
+  async function boot() {
+    try {
+      // Charger pyodide.js depuis la distribution choisie
+      await new Promise(function (resolve, reject) {
+        var s = document.createElement("script");
+        s.src = INDEX_URL + "pyodide.js";
+        s.onload = resolve;
+        s.onerror = function () {
+          reject(new Error("impossible de charger " + s.src));
+        };
+        document.head.appendChild(s);
+      });
+
+      var pyodide = await loadPyodide({ indexURL: INDEX_URL });
+      setStatus("chargement d'EMUSF…");
+
+      // Récupérer et décompresser le bundle (emusf + shim psycopg2 + antlr4)
+      var resp = await fetch("emusf_bundle.zip");
+      if (!resp.ok) throw new Error("emusf_bundle.zip introuvable (" + resp.status + ")");
+      var buf = await resp.arrayBuffer();
+      pyodide.unpackArchive(buf, "zip", { extractDir: "/emusf_app" });
+
+      var banner = await pyodide.runPythonAsync(
+        'import sys\n' +
+        'sys.path.insert(0, "/emusf_app")\n' +
+        'sys.setrecursionlimit(2500)\n' +
+        'import emusf_web\n' +
+        'emusf_web.init()\n');
+
+      var module = pyodide.pyimport("emusf_web");
+      pyRunLine = module.run_line;
+      pyRunClass = module.run_class;
+      pyReset = module.reset;
+
+      // Peupler le sélecteur de classes de démo
+      var classes = module.list_demo_classes().toJs();
+      var select = document.getElementById("classes");
+      classes.forEach(function (name) {
+        var opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+
+      // UI prête
+      document.getElementById("loader").remove();
+      document.getElementById("toolbar").hidden = false;
+      document.getElementById("inputbar").hidden = false;
+      setStatus("prêt — " + pyodide.version, "ready");
+
+      append("EMUSF REPL — " + banner, "entry-output banner");
+      append("Tapez du SOQL (SELECT …) ou de l'Apex (System.debug('hi');) — /help pour l'aide.\n", "entry-output info");
+      inputEl.focus();
+    } catch (e) {
+      console.error(e);
+      setStatus("échec du chargement", "error");
+      append("Échec du chargement : " + e.message, "entry-output error");
+      append("Vérifiez votre connexion (le CDN jsdelivr doit être accessible) puis rechargez la page.", "entry-output info");
+    }
+  }
+
+  // — Événements —
+
+  runBtn.addEventListener("click", function () { execute(inputEl.value); });
+  inputEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      execute(inputEl.value);
+    } else if (e.key === "ArrowUp") {
+      if (historyIdx > 0) {
+        historyIdx -= 1;
+        inputEl.value = history[historyIdx];
+        e.preventDefault();
+      }
+    } else if (e.key === "ArrowDown") {
+      if (historyIdx < history.length - 1) {
+        historyIdx += 1;
+        inputEl.value = history[historyIdx];
+      } else {
+        historyIdx = history.length;
+        inputEl.value = "";
+      }
+      e.preventDefault();
+    }
+  });
+
+  document.querySelectorAll("button.chip[data-cmd]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      execute(btn.getAttribute("data-cmd"));
+    });
+  });
+
+  document.getElementById("runclass").addEventListener("click", function () {
+    if (!pyRunClass) return;
+    var name = document.getElementById("classes").value;
+    append("run.py " + name + " run", "entry-input");
+    try {
+      append(pyRunClass(name), "entry-output");
+    } catch (e) {
+      append(String(e), "entry-output error");
+    }
+  });
+
+  document.getElementById("reset").addEventListener("click", function () {
+    if (!pyReset) return;
+    try {
+      var banner = pyReset();
+      append("Org réinitialisée — " + banner, "entry-output banner");
+    } catch (e) {
+      append(String(e), "entry-output error");
+    }
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>

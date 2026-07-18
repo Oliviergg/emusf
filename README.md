@@ -8,6 +8,19 @@ simule l'org. Utile pour développer, tester et déboguer hors ligne.
 source Apex → emusf/antlr/ (grammaire apex-parser) → ast_nodes → emusf/interpreter/ → PostgreSQL
 ```
 
+## Essayer dans le navigateur
+
+Un REPL Apex/SOQL tourne entièrement côté client sur GitHub Pages grâce à
+[Pyodide](https://pyodide.org) (Python en WebAssembly) et à un shim
+psycopg2→SQLite : **https://oliviergg.github.io/emusf/** — rien à installer,
+aucune donnée ne quitte l'onglet. Détails dans [`pyodide/`](pyodide/README.md).
+
+Le même shim permet aussi de lancer la suite de tests sans PostgreSQL :
+
+```bash
+PYTHONPATH=pyodide/shim python3 -m pytest tests/ --ignore=tests/test_pg_data_org.py
+```
+
 ## Prérequis
 
 - Python ≥ 3.11

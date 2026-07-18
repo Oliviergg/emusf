@@ -4,6 +4,7 @@ __pycache__/
 .sfdx/
 node_modules/
 web/static/slds/
+pyodide/dist/
 .venv/
 .DS_Store
 .env

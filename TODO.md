@@ -18,6 +18,12 @@ TODO
 -- org data DML : commande REPL /commit pour committer en cours de session
 -- org data DML : config des relations SFDX au-delà de Account/Contact (make_org ne charge que ces deux-là)
 -- DML sur SOQL inline : 'delete [SELECT ...]' échoue ('str' object has no attribute 'get') — sur toutes les orgs
+-- page Pyodide (pyodide/) : charger un .cls collé/uploadé par l'utilisateur dans le REPL navigateur ;
+   exposer les flows (flow_interpreter) et ApexTestInterpreter (System.assert*) dans la page
+-- shim psycopg2→sqlite (pyodide/shim) : couvrir PgDataOrg multi-connexions (cache partagé sqlite ou
+   fichier temp) pour faire passer test_pg_data_org.py sans serveur PG
+-- tests/test_flows.py : test_run_fl_update_date et test_flow_today_formula échouent indépendamment de la
+   base — formula_engine NOW()/TODAY() renvoie des objets datetime/date, les tests attendent des chaînes
 
 ÉVOLUTIONS INTERPRÉTEUR — priorisées d'après les tests apex-recipes (apex_tests/run_recipes_tests.py, clone
 trailheadapps/apex-recipes, EMUSF_RECIPES_ROOT). Rejouer le runner après chaque item pour mesurer le gain.
