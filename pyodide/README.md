@@ -16,11 +16,17 @@ navigateur
 
 ## Contenu
 
-- `web/index.html` — la page : charge Pyodide depuis le CDN jsdelivr,
-  décompresse `emusf_bundle.zip`, expose le REPL (SOQL, Apex, triggers,
-  exécution des classes de démo `apex/*.cls`).
+- `web/index.html` — la page (thème clair par défaut, bascule sombre) :
+  charge Pyodide depuis le CDN jsdelivr, décompresse `emusf_bundle.zip`, et
+  expose trois zones : explorateur de fichiers (classes/triggers de démo,
+  arborescence des scénarios embarqués), éditeur (modifier un fichier,
+  ⌘S pour sauvegarder dans le FS Pyodide, exécuter une méthode statique),
+  console REPL (SOQL, Apex).
 - `web/emusf_web.py` — bootstrap Python : crée le `PgTestOrg`, seed de démo
-  (mêmes données que `run.py`), boucle REPL (`run_line`, `run_class`, `reset`).
+  (mêmes données que `run.py`), REPL (`run_line`, `run_class`, `reset`) et
+  API de la page (`list_tree`, `read_file`/`write_file`, `reload_triggers`,
+  `run_scenario`). Sauvegarder un `.trigger` d'`apex/` recharge les triggers
+  de l'org ; un scénario s'exécute sur une org dédiée, comme `run.py`.
 - `shim/psycopg2/` — émulation du sous-ensemble psycopg2 utilisé par emusf,
   adossée à `sqlite3` : placeholders `%s`, `RealDictCursor`,
   `errors.UndefinedTable/UndefinedColumn`, schémas PG (bases `ATTACH`-ées),

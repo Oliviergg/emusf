@@ -1,7 +1,9 @@
-"""Gestion des callouts HTTP Apex — Named Credentials et appels réels."""
+"""Gestion des callouts HTTP Apex — Named Credentials et appels réels.
 
-import yaml
-import requests
+Les imports yaml/requests sont paresseux : le module doit rester importable
+dans les environnements sans ces packages (ex: Pyodide dans le navigateur),
+où les scénarios sans callout fonctionnent normalement.
+"""
 
 
 def load_named_credentials(path: str) -> dict:
@@ -14,6 +16,7 @@ def load_named_credentials(path: str) -> dict:
             Authorization: Bearer xxx
             Content-Type: application/json
     """
+    import yaml
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     return data
@@ -78,6 +81,7 @@ def execute_callout(req: dict, credentials: dict) -> dict:
     timeout_s = (timeout / 1000.0) if timeout else 30
 
     # Appel HTTP réel
+    import requests
     resp = requests.request(
         method=method,
         url=endpoint,
