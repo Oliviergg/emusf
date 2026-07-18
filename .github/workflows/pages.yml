@@ -1,7 +1,9 @@
 name: GitHub Pages — REPL Pyodide
 
 # Publie pyodide/dist/ (page + bundle emusf) sur GitHub Pages.
-# Prérequis (une fois) : Settings → Pages → Source = "GitHub Actions".
+# L'étape configure-pages active Pages automatiquement au premier run ;
+# si elle échoue (droits), activer une fois à la main :
+# Settings → Pages → Source = "GitHub Actions".
 
 on:
   push:
@@ -22,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
