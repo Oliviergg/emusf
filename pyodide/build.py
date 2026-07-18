@@ -7,6 +7,7 @@ Produit pyodide/dist/ :
         psycopg2/       — le shim SQLite (pyodide/shim/)
         antlr4/         — runtime ANTLR (téléchargé depuis PyPI, pur Python)
         apex/           — classes et triggers de démo
+        scenarios/      — scénarios autonomes (classes + triggers + flows)
         emusf_web.py    — bootstrap REPL appelé par index.html
 
 Usage : python3 pyodide/build.py [--dist DIR]
@@ -26,6 +27,10 @@ import zipfile
 
 # Doit correspondre au générateur du parser vendoré (cf. pyproject.toml)
 ANTLR_RUNTIME = "antlr4-python3-runtime==4.13.2"
+
+# Scénarios autonomes (pas de dépendance au projet SFDX externe, au schéma
+# data ni au réseau) — les autres ne peuvent pas tourner dans le navigateur
+BUNDLED_SCENARIOS = ("account_insert", "account_trigger")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -80,6 +85,9 @@ def build(dist: str):
             _add_tree(zf, os.path.join(HERE, "shim", "psycopg2"), "psycopg2")
             _add_tree(zf, antlr_pkg, "antlr4")
             _add_tree(zf, os.path.join(REPO, "apex"), "apex")
+            for scenario in BUNDLED_SCENARIOS:
+                _add_tree(zf, os.path.join(REPO, "scenarios", scenario),
+                          os.path.join("scenarios", scenario))
             zf.write(os.path.join(HERE, "web", "emusf_web.py"), "emusf_web.py")
 
     size_mb = os.path.getsize(bundle_path) / 1e6

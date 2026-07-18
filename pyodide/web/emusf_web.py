@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import glob
 import io
+import json
 import os
+import re
 import traceback
 from contextlib import redirect_stdout
 
@@ -21,6 +23,7 @@ from emusf.ast_printer import print_ast
 from emusf.trigger_parser import load_trigger
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 org = None
 parser = None
@@ -77,9 +80,102 @@ def list_demo_classes() -> list:
                   for p in glob.glob(os.path.join(_APP_DIR, "apex", "*.cls")))
 
 
+# --- Explorateur / éditeur de fichiers ---
+
+def _safe_path(rel: str) -> str:
+    """Résout un chemin relatif au bundle, en refusant d'en sortir."""
+    path = os.path.realpath(os.path.join(_APP_DIR, rel))
+    if not path.startswith(os.path.realpath(_APP_DIR) + os.sep):
+        raise ValueError("chemin hors du bundle: {}".format(rel))
+    return path
+
+
+def list_tree() -> str:
+    """Arborescence du bundle (JSON) : classes apex/ et scénarios."""
+    tree = {"apex": [], "scenarios": {}}
+    for path in sorted(glob.glob(os.path.join(_APP_DIR, "apex", "*"))):
+        if os.path.isfile(path):
+            tree["apex"].append("apex/" + os.path.basename(path))
+    scen_root = os.path.join(_APP_DIR, "scenarios")
+    if os.path.isdir(scen_root):
+        for name in sorted(os.listdir(scen_root)):
+            d = os.path.join(scen_root, name)
+            if os.path.isdir(d):
+                tree["scenarios"][name] = sorted(
+                    "scenarios/{}/{}".format(name, f)
+                    for f in os.listdir(d)
+                    if os.path.isfile(os.path.join(d, f))
+                    and not f.startswith("."))
+    return json.dumps(tree)
+
+
+def read_file(rel: str) -> str:
+    with open(_safe_path(rel)) as f:
+        return f.read()
+
+
+def write_file(rel: str, content: str) -> str:
+    """Sauvegarde une modification. Un .trigger d'apex/ est rechargé dans
+    l'org du REPL ; les .cls sont relus du disque à chaque exécution."""
+    path = _safe_path(rel)
+    with open(path, "w") as f:
+        f.write(content)
+    if rel.startswith("apex/") and rel.endswith(".trigger"):
+        return reload_triggers()
+    return "Sauvegardé : {}".format(rel)
+
+
+def reload_triggers() -> str:
+    """Reconstruit le registre de triggers de l'org REPL depuis apex/."""
+    org._triggers = {}
+    names, errors = [], []
+    buf = io.StringIO()
+    for trigger_file in sorted(glob.glob(os.path.join(_APP_DIR, "apex",
+                                                      "*.trigger"))):
+        try:
+            with redirect_stdout(buf):
+                load_trigger(org, trigger_file)
+            names.append(os.path.basename(trigger_file).replace(".trigger", ""))
+        except Exception as e:
+            errors.append("{} : {}".format(os.path.basename(trigger_file),
+                                           _format_error(e)))
+    out = "Triggers rechargés : {}".format(", ".join(names) or "(aucun)")
+    if errors:
+        out += "\nERREUR: " + "\n".join(errors)
+    return out
+
+
+def run_scenario(name: str, entry: str = "Main.cls", method: str = "run") -> str:
+    """Exécute un scénario du bundle (org bac à sable dédiée, comme run.py).
+
+    Nécessite les packages pyyaml/requests (chargés par la page avant le
+    premier appel — emusf.callout les importe au niveau module).
+    """
+    scenario_dir = _safe_path(os.path.join("scenarios", os.path.basename(name)))
+    if not os.path.isdir(scenario_dir):
+        return "Erreur: scénario '{}' introuvable".format(name)
+    from emusf.scenario_runner import load_scenario
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            ok = load_scenario(scenario_dir, entry, method)
+    except SystemExit:
+        ok = False
+    except Exception as e:
+        return _ANSI.sub("", buf.getvalue()) + "\nERREUR: " + _format_error(e)
+    out = _ANSI.sub("", buf.getvalue()).rstrip("\n")
+    return out + ("\n\nScénario OK" if ok else "\n\nScénario en ÉCHEC")
+
+
 def run_class(name: str, method: str = "run") -> str:
-    """Exécute une méthode statique d'un .cls du bundle (comme run.py)."""
-    path = os.path.join(_APP_DIR, "apex", os.path.basename(name))
+    """Exécute une méthode statique d'un .cls du bundle (comme run.py).
+
+    name : chemin relatif au bundle ('apex/AccountDemo.cls') ou simple nom de
+    fichier (cherché dans apex/). Le fichier est relu du disque à chaque
+    appel — les modifications sauvegardées dans l'éditeur sont prises en compte.
+    """
+    rel = name if "/" in name else "apex/" + os.path.basename(name)
+    path = _safe_path(rel)
     if not os.path.isfile(path):
         return "Erreur: '{}' introuvable".format(name)
     with open(path) as f:
